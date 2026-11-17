@@ -70,4 +70,4 @@ copy(JSON.stringify(...))  // 粘给 AI
 
 ## 许可
 
-仓库暂未附许可证文件。如需公开复用，请先加一个（MIT / Apache-2.0 等）。
+[MIT](LICENSE) © 2026 王虎 (Raywh)
