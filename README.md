@@ -6,6 +6,10 @@ AI 编码助手（TRAE / Cursor / Claude Code…）只能读源码，读不到**
 
 这个仓库有两个互补的东西，都围绕同一件事：**别让人转述，让 AI 直连现场。**
 
+![演示：AI 问卡片样式 → 工具返回真实值 → 改颜色后再问，值立刻更新](assets/demo.gif)
+
+> 上面这段不是手写截图。右侧每一行都是 MCP 工具 `element_style` 的真实返回；最后一步改掉卡片的 `--card-bg` 再问一次，返回的新值就是浏览器此刻画出来的颜色。
+
 ```
 mcp-cdp/              MCP server：通过 CDP 把页面的内容 / 行为 / 网络交给 AI
 trae-style-snapshot/  浏览器脚本：把渲染后的样式压成一段 AI 能读的 JSON
