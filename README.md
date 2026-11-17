@@ -10,6 +10,50 @@ AI 编码助手（TRAE / Cursor / Claude Code…）只能读源码，读不到**
 
 > 上面这段不是手写截图。右侧每一行都是 MCP 工具 `element_style` 的真实返回；最后一步改掉卡片的 `--card-bg` 再问一次，返回的新值就是浏览器此刻画出来的颜色。
 
+## 最快路径（3 步）
+
+**1. 起一个带调试端口的 Chrome**
+
+```powershell
+& "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe" `
+  --remote-debugging-port=9222 `
+  --user-data-dir="$env:TEMP\cdp-profile"
+```
+
+> `--user-data-dir` 不是可选项。新版 Chrome 不允许在默认配置上开远程调试，少了它端口根本起不来。
+>
+> macOS / Linux 把可执行文件换成 `google-chrome`（或 `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`），`--user-data-dir` 换成 `/tmp/cdp-profile` 即可。
+
+**2. 项目里建 `.trae/mcp.json`**
+
+```json
+{
+  "mcpServers": {
+    "page-eye": {
+      "command": "node",
+      "args": ["<克隆路径>/mcp-cdp/server.mjs"],
+      "env": { "CDP_ENDPOINT": "http://127.0.0.1:9222" }
+    }
+  }
+}
+```
+
+> - 路径必须**绝对**。
+> - Trae 要先在 `设置 → MCP` 打开「项目级 MCP」开关。
+> - 若 AI 报 `spawn node ENOENT`，把 `command` 换成 node 的绝对路径（`where node` / `which node`）。
+
+**3. 对 AI 说一句**
+
+> 用 page-eye 的 `element_style` 看一下 `.card` 的背景和阴影。
+
+---
+
+Cursor / Claude Code 用同一份 JSON，只是文件位置不同（`.cursor/mcp.json`、`claude mcp add`）。
+
+**只是想让 AI 知道样式、不想装 MCP？** 直接看 [trae-style-snapshot](trae-style-snapshot/README.md) —— 浏览器控制台贴一段脚本，零配置。
+
+## 仓库结构
+
 ```
 mcp-cdp/              MCP server：通过 CDP 把页面的内容 / 行为 / 网络交给 AI
 trae-style-snapshot/  浏览器脚本：把渲染后的样式压成一段 AI 能读的 JSON
