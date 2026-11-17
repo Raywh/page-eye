@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>style-snapshot stress</title>
+<style>
+  body { margin: 0; padding: 16px; font: 14px/20px system-ui; background: #f8fafc; }
+  .item { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+          background: #fff; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,.06);
+          margin-bottom: 6px; }
+  .iconfont { font-family: myicon, Arial; font-style: normal; font-size: 14px; }
+  .iconfont::before { content: "\e600"; }
+</style>
+</head>
+<body>
+<script src="./style-snapshot.js"></script>
+<script>
+window.addEventListener('load', function () {
+  var host = document.createElement('div');
+  for (var i = 0; i < 600; i++) {
+    var d = document.createElement('div');
+    d.className = 'item';
+    d.innerHTML = '<span class="i-name">item' + i + '</span>' +
+      '<svg width="12" height="12" viewBox="0 0 8 8"><path d="M0 0h8v8H0z"/></svg>' +
+      '<i class="iconfont icon-x"></i><em>a</em><b>b</b><u>c</u>';
+    host.appendChild(d);
+  }
+  document.body.appendChild(host);
+
+  // 预热：首帧布局不该算进任何一次计时
+  snap('.item');
+  getComputedStyle(document.body).backgroundColor;
+
+  function time(label, fn) {
+    var t = performance.now();
+    var r = fn();
+    return {
+      label: label,
+      ms: +(performance.now() - t).toFixed(1),
+      total: r.total,
+      scanned: r.scanned,
+      variants: r.variants,
+      scanTruncated: !!r.scanTruncated
+    };
+  }
+
+  var out = {
+    domNodes: document.querySelectorAll('*').length,
+    runs: [
+      time("snapAll('.item')  默认", function () { return snapAll('.item'); }),
+      time("snapAll('.item')  icons:false", function () { return snapAll('.item', { icons: false }); }),
+      time("snapAll('.item')  limit:600 + icons", function () { return snapAll('.item', { limit: 600 }); }),
+      time("snapAll('*')     全页面最坏情况", function () { return snapAll('*'); }),
+      time("snap('.item')    单个元素", function () { var n = snap('.item'); return { total: 1, scanned: 1, variants: 1 }; })
+    ]
+  };
+
+  var pre = document.createElement('pre');
+  pre.id = 'RESULT';
+  pre.textContent = JSON.stringify(out, null, 2);
+  document.body.appendChild(pre);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>mcp-cdp fixture</title>
+<style>
+  body { font: 14px/20px system-ui; margin: 0; padding: 24px; background: #0d1117; color: #e6edf3; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  main { padding: 12px; border: 1px solid #30363d; border-radius: 8px; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  button { padding: 6px 12px; border-radius: 6px; border: 1px solid #30363d; background: #21262d; color: #e6edf3; }
+</style>
+</head>
+<body>
+<h1>CDP 采集测试</h1>
+<main id="app">
+  <p class="lead">hello</p>
+  <div class="row">
+    <button id="btn-a">点我</button>
+    <button id="btn-b">也会记一条 console</button>
+  </div>
+</main>
+<script>
+(async () => {
+  console.log('boot', 'ok');
+  console.info('这是 info');
+  console.warn('这是 warn');
+  console.error('boom', { code: 42, msg: 'bad' });
+
+  document.getElementById('btn-a').addEventListener('click', () => {
+    console.log('btn-a clicked');
+  });
+
+  const hit = (u, opt) => fetch(u, opt).catch(e => console.warn('fetch failed:', e.message));
+
+  // 200 JSON
+  await hit('/api/items');
+  // POST，带 body —— 用来验证 postData 有没有被记下来
+  await hit('/api/save', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ a: 1, b: 'two' })
+  });
+  // 500
+  await hit('/api/fail');
+  // 404
+  await hit('/api/missing-thing');
+  // 20000 字，应该落盘
+  await hit('/api/big');
+  // 慢请求
+  await hit('/api/slow');
+  // 连接失败
+  await hit('http://127.0.0.1:1/nope');
+
+  setTimeout(() => { throw new Error('未捕获的异常'); }, 60);
+  setTimeout(() => console.log('tick'), 150);
+})();
+</script>
+</body>
+</html>

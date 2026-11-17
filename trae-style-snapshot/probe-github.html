@@ -1,0 +1,286 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GitHub Hero 样式复刻</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, "Segoe UI", "Noto Sans", "PingFang SC", "Microsoft YaHei", Helvetica, Arial, sans-serif;
+    background: #0d1117;
+    color: #fff;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---------- 导航栏 ---------- */
+  .nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 32px;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+  }
+  .nav .logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.15rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .nav .logo svg { display: block; }
+  .nav .links { display: flex; align-items: center; gap: 24px; }
+  .nav .links a {
+    color: rgba(255,255,255,0.8);
+    text-decoration: none;
+    font-size: 0.95rem;
+  }
+  .nav .links a:hover { color: #fff; }
+  .nav .actions { display: flex; align-items: center; gap: 16px; }
+  .nav .actions a { color: rgba(255,255,255,0.8); text-decoration: none; font-size: 0.95rem; }
+  .nav .actions a:hover { color: #fff; }
+  .nav .btn-signin {
+    border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 8px;
+    padding: 6px 16px;
+    color: #fff !important;
+    font-weight: 600;
+  }
+
+  /* ---------- Hero 主体 ---------- */
+  .hero {
+    position: relative;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 120px 24px 64px;
+    overflow: hidden;
+    /* 深蓝渐变 + 顶部/角落光晕 */
+    background:
+      radial-gradient(1100px 560px at 50% -12%, rgba(56,139,253,0.30), transparent 60%),
+      radial-gradient(820px 480px at 82% 112%, rgba(124,77,255,0.20), transparent 55%),
+      radial-gradient(700px 420px at 12% 108%, rgba(56,139,253,0.14), transparent 55%),
+      linear-gradient(180deg, #0d1b2e 0%, #0d1117 100%);
+  }
+  /* 细点阵网格，还原 GitHub 背景质感 */
+  .hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(rgba(255,255,255,0.07) 1px, transparent 1px);
+    background-size: 26px 26px;
+    mask-image: radial-gradient(ellipse 90% 70% at 50% 40%, #000 30%, transparent 75%);
+    -webkit-mask-image: radial-gradient(ellipse 90% 70% at 50% 40%, #000 30%, transparent 75%);
+    pointer-events: none;
+  }
+  .hero > * { position: relative; z-index: 1; }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid rgba(255,255,255,0.22);
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(4px);
+    border-radius: 999px;
+    padding: 7px 16px;
+    font-size: 0.9rem;
+    color: rgba(255,255,255,0.9);
+    margin-bottom: 28px;
+  }
+  .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; }
+
+  h1 {
+    font-size: clamp(2.6rem, 6vw, 4.4rem);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    line-height: 1.08;
+    max-width: 900px;
+  }
+  h1 .grad {
+    background: linear-gradient(92deg, #58a6ff 0%, #bc8cff 55%, #f778ba 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .sub {
+    margin-top: 22px;
+    color: rgba(255,255,255,0.72);
+    font-size: clamp(1.05rem, 2vw, 1.25rem);
+    line-height: 1.6;
+    max-width: 640px;
+  }
+
+  .form {
+    margin-top: 36px;
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+    width: 100%;
+    max-width: 640px;
+  }
+  .form input {
+    flex: 1 1 280px;
+    background: rgba(13,17,23,0.85);
+    border: 1px solid rgba(255,255,255,0.25);
+    border-radius: 8px;
+    color: #fff;
+    font-size: 1rem;
+    padding: 13px 18px;
+    outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .form input::placeholder { color: rgba(255,255,255,0.45); }
+  .form input:focus { border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(88,166,255,0.25); }
+
+  .btn {
+    font-size: 1rem;
+    font-weight: 600;
+    border-radius: 8px;
+    padding: 13px 22px;
+    cursor: pointer;
+    border: none;
+    transition: transform .12s, box-shadow .15s;
+    text-decoration: none;
+    display: inline-block;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: #fff; color: #0d1117; }
+  .btn-primary:hover { box-shadow: 0 6px 24px rgba(255,255,255,0.25); }
+  .btn-ghost {
+    background: transparent;
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.35);
+  }
+  .btn-ghost:hover { border-color: rgba(255,255,255,0.7); }
+
+  .hint { margin-top: 18px; font-size: 0.85rem; color: rgba(255,255,255,0.45); }
+  .hint a { color: rgba(255,255,255,0.75); }
+
+  /* ---------- 底部彩色图标区 ---------- */
+  .tiles {
+    margin-top: 64px;
+    display: grid;
+    grid-template-columns: repeat(6, 56px);
+    gap: 18px;
+    justify-content: center;
+  }
+  .tile {
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    transition: transform .15s;
+  }
+  .tile:hover { transform: translateY(-4px) scale(1.05); }
+  .t-green  { background: linear-gradient(135deg, #2ea043, #1a7f37); }
+  .t-purple { background: linear-gradient(135deg, #8957e5, #6f42c1); }
+  .t-yellow { background: linear-gradient(135deg, #d4a72c, #9e6a03); }
+  .t-pink   { background: linear-gradient(135deg, #f778ba, #db61a2); }
+  .t-cyan   { background: linear-gradient(135deg, #39c5cf, #1b9aa3); }
+  .t-orange { background: linear-gradient(135deg, #f0883e, #db6d28); }
+
+  footer {
+    text-align: center;
+    padding: 40px 20px 32px;
+    color: rgba(255,255,255,0.4);
+    font-size: 0.85rem;
+  }
+
+  @media (max-width: 640px) {
+    .nav .links { display: none; }
+    .tiles { grid-template-columns: repeat(3, 56px); }
+  }
+</style>
+</head>
+<body>
+
+  <!-- 导航栏 -->
+  <header class="nav">
+    <div class="logo">
+      <svg height="26" viewBox="0 0 16 16" width="26" fill="#fff" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+      </svg>
+      <span>GitHub</span>
+    </div>
+    <nav class="links">
+      <a href="#">Product</a>
+      <a href="#">Solutions</a>
+      <a href="#">Open Source</a>
+      <a href="#">Enterprise</a>
+    </nav>
+    <div class="actions">
+      <a href="#">Sign in</a>
+      <a class="btn-signin" href="#">Sign up</a>
+    </div>
+  </header>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="badge"><span class="dot"></span> Built for the AI era</div>
+    <h1>The future of building<br>happens <span class="grad">together</span></h1>
+    <p class="sub">Tools and trends evolve, but collaboration endures. With GitHub, developers, agents, and code come together on one platform.</p>
+
+    <form class="form" onsubmit="return false;">
+      <input type="email" placeholder="Enter your email">
+      <button class="btn btn-primary" type="submit">Sign up for GitHub</button>
+      <a class="btn btn-ghost" href="#">Try GitHub Copilot</a>
+    </form>
+    <p class="hint"><a href="#">Start a free enterprise trial</a> · <a href="#">Contact sales</a></p>
+
+    <!-- 彩色图标区 -->
+    <div class="tiles">
+      <div class="tile t-green">🗂️</div>
+      <div class="tile t-purple">🧠</div>
+      <div class="tile t-yellow">💬</div>
+      <div class="tile t-pink">🚀</div>
+      <div class="tile t-cyan">⚡</div>
+      <div class="tile t-orange">🤖</div>
+    </div>
+  </section>
+
+  <footer>
+    © 2026 GitHub 风格复刻 — 基于 ModLens 读图结果手工实现
+  </footer>
+
+  <script src="./style-snapshot.js"></script>
+  <script>
+  window.addEventListener('load', function () {
+    var t0 = performance.now();
+    var all = snapAll('*', { max: 40 });
+    var ms = Math.round(performance.now() - t0);
+    var pg = page();
+    var out = {
+      elapsedMs: ms,
+      domNodes: document.querySelectorAll('*').length,
+      total: all.total,
+      variants: all.variants,
+      page: pg.map(function (p) { return { sel: p.sel, bg: p.bg, font: p.font }; }),
+      first: all.nodes.slice(0, 5)
+    };
+    var pre = document.createElement('pre');
+    pre.id = 'RESULT';
+    pre.textContent = JSON.stringify(out, null, 2);
+    document.body.appendChild(pre);
+  });
+  </script>
+</body>
+</html>
+
