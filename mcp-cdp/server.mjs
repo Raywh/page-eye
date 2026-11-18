@@ -697,14 +697,18 @@ async function runJs(args = {}) {
   if (r.exceptionDetails) {
     return { error: r.exceptionDetails.text, detail: r.exceptionDetails.exception && r.exceptionDetails.exception.description };
   }
-  const v = r.result;
+  const v = r.result || {};
   let value = v.value;
-  if (value === undefined && v.description) value = v.description;
-  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-  return {
-    type: v.type,
-    value: truncate(text == null ? 'undefined' : text, args.maxLength || 6000)
-  };
+  if (value === undefined && v.description !== undefined) value = v.description;
+
+  // 保留原始类型：布尔/数字原样返回，别一律 stringify 成字符串
+  const maxLength = args.maxLength || 6000;
+  let rendered;
+  try { rendered = JSON.stringify(value); } catch { rendered = undefined; }
+  if (rendered !== undefined && rendered.length > maxLength) {
+    return { type: v.type, value: rendered.slice(0, maxLength) + '…(truncated)', truncated: true };
+  }
+  return { type: v.type, value: value === undefined ? null : value };
 }
 
 async function recorder(args = {}) {
@@ -997,6 +1001,7 @@ async function debuggerCtl(args = {}) {
 // ---- 高亮元素
 async function highlight(args = {}) {
   const c = await ensure();
+  await c.send('DOM.enable');   // Overlay/DOM.getDocument 都依赖 DOM 域
   await c.send('Overlay.enable');
   if (args.clear) { await c.send('Overlay.hideHighlight'); return { ok: true, cleared: true }; }
   if (!args.selector) throw new Error('需要 selector');

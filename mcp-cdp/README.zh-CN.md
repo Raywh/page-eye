@@ -241,17 +241,24 @@ Chrome 的判据是「这条规则匹配到了至少一个元素」——所以�
 
 ## 验证
 
-```
-test-client.mjs           44/44 断言
-capabilities-test.mjs     22/22（十项扩展能力）
-concurrency-test.mjs      5 路与 12 路 → 1 条连接，事件数精确相符
+```powershell
+node run-tests.mjs              # 全部套件，113 条
+node run-tests.mjs service      # 只跑某个套件
 ```
 
-```powershell
-node serve.mjs                                   # 夹具服务 :8799
-# 然后：Chrome --remote-debugging-port=9223 http://127.0.0.1:8799/
-$env:CDP_ENDPOINT='http://127.0.0.1:9223'; node test-client.mjs
-```
+跑器会起夹具服务，并且**每个套件都用一台全新的 Chrome**，套件之间不会互相泄漏状态（多出来的标签、mock、媒体模拟、缓冲）。
+
+| 套件 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `transport`（`test-client.mjs`） | 44 | 握手、200/404/500、POST 体、大 body 落盘、console 各级别、多标签切换、`element_style` |
+| `capabilities`（`capabilities-test.mjs`） | 22 | 十项扩展工具的正常路径 + 副作用 |
+| `service`（`suite-service.mjs`） | 41 | 协议错误、每个工具的错误路径、生命周期 |
+| `concurrency`（`concurrency-test.mjs`） | 各 3 | 只建一条 CDP 连接，事件不重复 |
+
+写 `suite-service.mjs` 时立刻抓出两个被旧套件掩盖的真 bug：
+
+1. **`highlight` 只在 `css_coverage` 先跑过时才工作。** 从没调过 `DOM.enable`，于是报 `DOM should be enabled first`。旧套件恰好先调了 `css_coverage`，把它盖住了。
+2. **`run_js` 把一切结果都字符串化。** `matchMedia(...).matches` 回来是 `"false"`，HTTP 状态回来是 `"418"`。现在保留原生 JSON 类型，只在值过大时降级成截断字符串。
 
 ---
 

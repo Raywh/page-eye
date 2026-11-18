@@ -241,17 +241,24 @@ This server's niche: **zero dependencies, context discipline, and CSS-variable p
 
 ## Verification
 
-```
-test-client.mjs           44/44 assertions
-capabilities-test.mjs     22/22  (all ten extended capabilities)
-concurrency-test.mjs      5-way and 12-way → 1 connection, exact event counts
+```powershell
+node run-tests.mjs              # every suite, 113 checks
+node run-tests.mjs service      # a single suite
 ```
 
-```powershell
-node serve.mjs                                   # fixture server on :8799
-# then: Chrome --remote-debugging-port=9223 http://127.0.0.1:8799/
-$env:CDP_ENDPOINT='http://127.0.0.1:9223'; node test-client.mjs
-```
+The runner starts the fixture server and a **fresh Chrome per suite**, so suites cannot leak state into each other (extra tabs, mocks, media emulation, buffers).
+
+| Suite | Checks | Covers |
+| --- | --- | --- |
+| `transport` (`test-client.mjs`) | 44 | handshake, 200/404/500, POST body, body spill, console levels, tab switching, `element_style` |
+| `capabilities` (`capabilities-test.mjs`) | 22 | the ten extended tools, happy path + side effects |
+| `service` (`suite-service.mjs`) | 41 | protocol errors, every tool's error path, lifecycle |
+| `concurrency` (`concurrency-test.mjs`) | 3 × 2 | one CDP connection, no duplicate events |
+
+Writing `suite-service.mjs` immediately found two real bugs that the earlier suites had hidden:
+
+1. **`highlight` only worked if `css_coverage` ran first.** `DOM.enable` was never called, so it failed with `DOM should be enabled first`. The older suite happened to call `css_coverage` earlier, which masked it.
+2. **`run_js` stringified every result.** `matchMedia(...).matches` came back as `"false"` and an HTTP status as `"418"`. It now returns native JSON types and only falls back to a truncated string when the value is too large.
 
 ---
 

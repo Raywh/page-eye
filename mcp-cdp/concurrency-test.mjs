@@ -65,5 +65,7 @@ console.log(JSON.stringify({
   checks
 }, null, 2));
 
+console.log('RESULT ' + JSON.stringify({ suite: 'concurrency', ...{ total: checks.length, pass: checks.length - failed.length, fail: failed.length } }));
+
 proc.kill();
 process.exit(failed.length ? 1 : 0);

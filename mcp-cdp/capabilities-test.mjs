@@ -136,5 +136,7 @@ console.log(JSON.stringify({
   passed: checks.filter(c => c.pass).map(c => '  ✓ ' + c.name + (c.detail ? '  —  ' + c.detail : ''))
 }, null, 2));
 
+console.log('RESULT ' + JSON.stringify({ suite: 'capabilities', ...{ total: checks.length, pass: checks.length - failed.length, fail: failed.length } }));
+
 proc.kill();
 process.exit(failed.length ? 1 : 0);

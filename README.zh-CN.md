@@ -170,16 +170,23 @@ node mcp-cdp/server.mjs          # 在 stdio 上说 JSON-RPC
 
 ## 验证
 
-不是「应该能跑」，是量过的：
+一条命令跑全部，**每个套件都用一台全新的 Chrome**，互不污染：
 
-| 套件 | 结果 |
-| --- | --- |
-| `test-client.mjs`：传输、网络、console、多标签、`element_style` | **44 / 44**，多次连跑 |
-| `capabilities-test.mjs`：十项扩展能力 | **22 / 22** |
-| `concurrency-test.mjs`：5 路与 12 路并发 | **1 条 CDP 连接，事件数精确相符** |
-| `trae-style-snapshot/verify-run.js` | **51 / 51** 断言 |
-| `trae-style-snapshot` 边界输入 | **12 / 12** 不抛异常 |
-| `trae-style-snapshot` 压力 | 4809 个 DOM 节点，`snapAll('*')` 12 ms |
+```powershell
+node mcp-cdp/run-tests.mjs              # 全部 113 条
+node mcp-cdp/run-tests.mjs service      # 只跑某个套件
+```
+
+| 套件 | 条数 | 覆盖 |
+| --- | --- | --- |
+| `transport` | 44 | MCP 握手、真实 200/404/500、POST 体、大 body 落盘、console 各级别、未捕获异常、多标签切换、`element_style` |
+| `capabilities` | 22 | 十项扩展工具的正常路径 + 副作用检查 |
+| `service` | 41 | 协议层（未知方法、坏 JSON、缺参数）、每个工具的错误路径、并发、进程生命周期 |
+| `concurrency-5` / `-12` | 各 3 | 并行调用只建一条 CDP 连接，事件不重复 |
+
+**113 / 113，连续三次全跑通过。**
+
+`trae-style-snapshot` 有自己的一套：**51** 条断言、**12** 个边界输入不抛异常、4809 节点压力测试。
 
 ## 环境要求
 

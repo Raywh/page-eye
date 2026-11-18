@@ -194,6 +194,7 @@ try {
   };
   writeFileSync(new URL('./test-result.json', import.meta.url), JSON.stringify(report, null, 2));
   console.log(`[test] ${report.summary.pass}/${report.summary.total} 通过，写入 test-result.json`);
+  console.log('RESULT ' + JSON.stringify({ suite: 'transport', ...report.summary }));
   proc.kill();
   process.exit(failedCount ? 1 : 0);
 }

@@ -171,16 +171,23 @@ node mcp-cdp/server.mjs          # speaks JSON-RPC on stdio
 
 ## Verification
 
-Not “should work” — measured:
+One command runs everything, and **each suite gets its own fresh Chrome** so suites cannot contaminate each other:
 
-| Suite | Result |
-| --- | --- |
-| `test-client.mjs` — transport, network, console, targets, `element_style` | **44 / 44**, repeated runs |
-| `capabilities-test.mjs` — all ten extended capabilities | **22 / 22** |
-| `concurrency-test.mjs` — 5-way and 12-way parallel calls | **1 CDP connection, exact event counts** |
-| `trae-style-snapshot/verify-run.js` | **51 / 51** assertions |
-| `trae-style-snapshot` edge inputs | **12 / 12** no exceptions |
-| `trae-style-snapshot` stress | 4809 DOM nodes, `snapAll('*')` 12 ms |
+```powershell
+node mcp-cdp/run-tests.mjs              # all 113 checks
+node mcp-cdp/run-tests.mjs service      # a single suite
+```
+
+| Suite | Checks | Covers |
+| --- | --- | --- |
+| `transport` | 44 | MCP handshake, real 200/404/500, POST body, body spill to disk, console levels, uncaught exceptions, tab switching, `element_style` |
+| `capabilities` | 22 | All ten extended tools, happy path with side-effect assertions |
+| `service` | 41 | Protocol layer (unknown method, malformed JSON, missing arguments), every tool's error path, concurrency, process lifecycle |
+| `concurrency-5` / `-12` | 3 each | Parallel calls open exactly one CDP connection and record each event once |
+
+**113 / 113, three consecutive full runs.**
+
+`trae-style-snapshot` keeps its own suites: **51** assertions, **12** edge inputs with no exceptions, plus a 4809-node stress run.
 
 ## Requirements
 
