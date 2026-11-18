@@ -185,6 +185,7 @@ async function connectNow() {
     throw e;
   }
   install(c);
+  installExtra(c);
 
   currentConn = c;
   currentTargetId = target.id;
@@ -724,7 +725,348 @@ async function recorder(args = {}) {
   };
 }
 
-// ------------------------------------------------------------------ MCP
+// ------------------------------------------------------------------ 扩展能力
+// 这一组对应 DevTools 六大面板：元素、样式、调试、Console、性能、网络。
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const sheetUrls = new Map();   // styleSheetId -> sourceURL
+const mocks = [];              // { re, status, body, headers }
+let pauseWaiters = [];
+
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || ''));
+  if (!m) return { r: 0, g: 179, b: 255 };
+  return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
+}
+
+function installExtra(c) {
+  c.on('CSS.styleSheetAdded', p => {
+    const h = p.header || {};
+    if (h.styleSheetId) sheetUrls.set(h.styleSheetId, h.sourceURL || h.origin || '(inline)');
+  });
+
+  c.on('Fetch.requestPaused', async p => {
+    const hit = mocks.find(m => m.re.test(p.request.url));
+    try {
+      if (hit) {
+        await c.send('Fetch.fulfillRequest', {
+          requestId: p.requestId,
+          responseCode: hit.status,
+          responseHeaders: Object.entries(hit.headers).map(([name, value]) => ({ name, value: String(value) })),
+          body: Buffer.from(hit.body).toString('base64')
+        });
+      } else {
+        await c.send('Fetch.continueRequest', { requestId: p.requestId });
+      }
+    } catch (e) { log('fetch handler:', e.message); }
+  });
+
+  c.on('Debugger.paused', p => {
+    const w = pauseWaiters; pauseWaiters = [];
+    w.forEach(fn => { try { fn(p); } catch {} });
+  });
+}
+
+// ---- 网络条件：禁缓存 / 限速 / 离线
+const netState = { latency: 0, downloadKbps: 0, uploadKbps: 0, offline: false, cacheDisabled: false };
+
+function throughput(kbps) { return kbps ? Math.round((kbps * 1024) / 8) : -1; }
+
+async function pushNetConditions(c) {
+  await c.send('Network.setCacheDisabled', { cacheDisabled: netState.cacheDisabled });
+  await c.send('Network.emulateNetworkConditions', {
+    offline: netState.offline,
+    latency: netState.latency,
+    downloadThroughput: throughput(netState.downloadKbps),
+    uploadThroughput: throughput(netState.uploadKbps)
+  });
+}
+
+async function netConditions(args = {}) {
+  const c = await ensure();
+  if (args.reset) {
+    Object.assign(netState, { latency: 0, downloadKbps: 0, uploadKbps: 0, offline: false, cacheDisabled: false });
+    await pushNetConditions(c);
+    return { ok: true, reset: true, state: { ...netState } };
+  }
+  if (args.cacheDisabled !== undefined) netState.cacheDisabled = !!args.cacheDisabled;
+  if (args.latencyMs !== undefined) netState.latency = Number(args.latencyMs);
+  if (args.downloadKbps !== undefined) netState.downloadKbps = Number(args.downloadKbps);
+  if (args.uploadKbps !== undefined) netState.uploadKbps = Number(args.uploadKbps);
+  if (args.offline !== undefined) netState.offline = !!args.offline;
+  await pushNetConditions(c);
+  return {
+    ok: true,
+    state: { ...netState },
+    note: '设置会一直生效，直到 reset 或再次调用；配合 recorder reload 量首屏更有意义'
+  };
+}
+
+// ---- 无障碍树
+async function a11yTree(args = {}) {
+  const c = await ensure();
+  await c.send('Accessibility.enable');
+  const r = await c.send('Accessibility.getFullAXTree');
+  const nodes = (r.nodes || []).filter(n => !n.ignored);
+  const histogram = {};
+  nodes.forEach(n => {
+    const role = n.role && n.role.value;
+    if (role) histogram[role] = (histogram[role] || 0) + 1;
+  });
+  const want = args.roles ? String(args.roles).split(',').map(s => s.trim()).filter(Boolean) : null;
+  const limit = Math.min(args.limit || 60, 300);
+  const picked = nodes
+    .filter(n => n.name && n.name.value)
+    .filter(n => !want || want.includes((n.role && n.role.value) || ''))
+    .slice(0, limit)
+    .map(n => {
+      const lvl = (n.properties || []).find(p => p.name === 'level');
+      return {
+        role: n.role && n.role.value,
+        name: truncate(String(n.name.value), 80),
+        level: lvl && lvl.value ? lvl.value.value : undefined
+      };
+    });
+  return {
+    totalNodes: nodes.length,
+    roleHistogram: Object.entries(histogram).sort((a, b) => b[1] - a[1]).slice(0, 15),
+    returned: picked.length,
+    nodes: picked
+  };
+}
+
+// ---- CSS 规则覆盖率
+async function cssCoverage(args = {}) {
+  const c = await ensure();
+  await c.send('DOM.enable');          // CSS 域依赖 DOM 域
+  await c.send('CSS.enable');
+  await c.send('CSS.startRuleUsageTracking');
+  if (args.reload !== false) {
+    await c.send('Page.reload', { ignoreCache: true });
+    await sleep(args.waitMs || 3000);
+  }
+  const stop = await c.send('CSS.stopRuleUsageTracking');
+  const usage = stop.ruleUsage || [];
+  const bySheet = new Map();
+  for (const u of usage) {
+    if (!bySheet.has(u.styleSheetId)) {
+      bySheet.set(u.styleSheetId, { url: sheetUrls.get(u.styleSheetId) || '(未知)', used: 0, unused: 0 });
+    }
+    const e = bySheet.get(u.styleSheetId);
+    u.used ? e.used++ : e.unused++;
+  }
+  const used = usage.filter(u => u.used).length;
+  const total = usage.length;
+  return {
+    rules: total,
+    used,
+    unused: total - used,
+    unusedPct: total ? +(((total - used) / total) * 100).toFixed(1) : 0,
+    sheets: Array.from(bySheet.values()).map(s => ({ ...s, url: truncate(s.url, 120) }))
+  };
+}
+
+// ---- 媒体 / 深色 / 打印 模拟
+async function emulateMedia(args = {}) {
+  const c = await ensure();
+  if (args.reset) {
+    await c.send('Emulation.setEmulatedMedia', { media: '', features: [] });
+    return { ok: true, reset: true };
+  }
+  const features = [];
+  if (args.scheme) features.push({ name: 'prefers-color-scheme', value: args.scheme });
+  if (args.reducedMotion) features.push({ name: 'prefers-reduced-motion', value: args.reducedMotion });
+  if (args.forcedColors) features.push({ name: 'forced-colors', value: args.forcedColors });
+  await c.send('Emulation.setEmulatedMedia', { media: args.media || '', features });
+  const r = await c.send('Runtime.evaluate', {
+    expression: `({
+      scheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+      reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+      bodyBg: getComputedStyle(document.body).backgroundColor,
+      bodyColor: getComputedStyle(document.body).color
+    })`,
+    returnByValue: true
+  });
+  return {
+    ok: true,
+    media: args.media || '',
+    features,
+    pageNow: r.result && r.result.value
+  };
+}
+
+// ---- 截图（存盘，不把 base64 灌进上下文）
+async function screenshot(args = {}) {
+  const c = await ensure();
+  const opts = { format: 'png' };
+  let clip = null;
+  if (args.selector) {
+    const r = await c.send('Runtime.evaluate', {
+      expression: `(() => {
+        const el = document.querySelector(${JSON.stringify(args.selector)});
+        if (!el) return null;
+        const b = el.getBoundingClientRect();
+        return { x: b.x + scrollX, y: b.y + scrollY, width: b.width, height: b.height };
+      })()`,
+      returnByValue: true
+    });
+    clip = r.result && r.result.value;
+    if (!clip) return { error: '没有匹配到元素：' + args.selector };
+    if (!clip.width || !clip.height) return { error: '元素尺寸为 0，无法截图' };
+    opts.clip = { ...clip, scale: 1 };
+    opts.captureBeyondViewport = true;
+  } else if (args.fullPage) {
+    opts.captureBeyondViewport = true;
+  }
+  const shot = await c.send('Page.captureScreenshot', opts);
+  const buf = Buffer.from(shot.data, 'base64');
+  mkdirSync(CAPTURE_DIR, { recursive: true });
+  const file = resolve(CAPTURE_DIR, `shot-${Date.now()}.png`);
+  writeFileSync(file, buf);
+  return { path: file, bytes: buf.length, clip };
+}
+
+// ---- 请求 mock / 改响应
+async function netMock(args = {}) {
+  const c = await ensure();
+  if (args.clear) {
+    mocks.length = 0;
+    try { await c.send('Fetch.disable'); } catch {}
+    return { ok: true, cleared: true };
+  }
+  if (!args.urlPattern) throw new Error('需要 urlPattern（正则字符串，比如 "/api/items"）');
+  mocks.push({
+    re: new RegExp(args.urlPattern),
+    status: args.status || 200,
+    body: args.body || '',
+    headers: args.headers || { 'content-type': 'application/json; charset=utf-8' }
+  });
+  await c.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
+  return {
+    ok: true,
+    rules: mocks.map(m => ({ pattern: m.re.source, status: m.status, bodyBytes: m.body.length })),
+    note: '只影响之后的请求；用完记得 clear'
+  };
+}
+
+// ---- JS 调试
+async function debuggerCtl(args = {}) {
+  const c = await ensure();
+  const action = args.action || 'status';
+
+  if (action === 'exceptions') {
+    await c.send('Debugger.enable');
+    const state = args.state || 'uncaught';
+    await c.send('Debugger.setPauseOnExceptions', { state });
+    return { ok: true, pauseOnExceptions: state };
+  }
+  if (action === 'break') {
+    await c.send('Debugger.enable');
+    const r = await c.send('Debugger.setBreakpointByUrl', {
+      lineNumber: Math.max(0, Number(args.lineNumber || 0)),
+      urlRegex: args.urlRegex || '.*'
+    });
+    return { ok: true, breakpointId: r.breakpointId, locations: (r.locations || []).length };
+  }
+  if (action === 'wait') {
+    await c.send('Debugger.enable');
+    const timeout = Math.min(args.timeoutMs || 8000, 30000);
+    const paused = await new Promise(res => {
+      let done = false;
+      const t = setTimeout(() => { if (!done) { done = true; res(null); } }, timeout);
+      pauseWaiters.push(p => { if (!done) { done = true; clearTimeout(t); res(p); } });
+    });
+    if (!paused) return { paused: false, note: timeout + 'ms 内没有暂停（确认先 exceptions 或 break）' };
+    const frames = (paused.callFrames || []).slice(0, 8).map(f => ({
+      fn: f.functionName || '(anonymous)',
+      url: truncate(f.url, 120),
+      line: f.location.lineNumber + 1
+    }));
+    if (args.resume !== false) { try { await c.send('Debugger.resume'); } catch {} }
+    return { paused: true, reason: paused.reason, frames };
+  }
+  if (action === 'resume') { await c.send('Debugger.resume'); return { ok: true }; }
+  if (action === 'off') {
+    try { await c.send('Debugger.setPauseOnExceptions', { state: 'none' }); } catch {}
+    try { await c.send('Debugger.disable'); } catch {}
+    return { ok: true, off: true };
+  }
+  return { error: 'action 只能是 exceptions / break / wait / resume / off' };
+}
+
+// ---- 高亮元素
+async function highlight(args = {}) {
+  const c = await ensure();
+  await c.send('Overlay.enable');
+  if (args.clear) { await c.send('Overlay.hideHighlight'); return { ok: true, cleared: true }; }
+  if (!args.selector) throw new Error('需要 selector');
+  const doc = await c.send('DOM.getDocument', { depth: 1 });
+  const q = await c.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: args.selector });
+  if (!q.nodeId) return { error: '没有匹配到元素：' + args.selector };
+  const rgb = hexToRgb(args.color || '#00b3ff');
+  await c.send('Overlay.highlightNode', {
+    nodeId: q.nodeId,
+    highlightConfig: {
+      showInfo: true,
+      contentColor: { ...rgb, a: 0.25 },
+      paddingColor: { r: 0, g: 200, b: 120, a: 0.2 },
+      borderColor: { r: 255, g: 160, b: 0, a: 0.5 }
+    }
+  });
+  return { ok: true, selector: args.selector, nodeId: q.nodeId };
+}
+
+// ---- 性能指标
+async function perfMetrics() {
+  const c = await ensure();
+  await c.send('Performance.enable');
+  const r = await c.send('Performance.getMetrics');
+  const all = {};
+  (r.metrics || []).forEach(m => { all[m.name] = m.value; });
+  const pick = [
+    'Documents', 'Frames', 'Nodes', 'JSEventListeners',
+    'LayoutCount', 'RecalcStyleCount', 'LayoutDuration', 'RecalcStyleDuration',
+    'ScriptDuration', 'TaskDuration', 'JSHeapUsedSize', 'JSHeapTotalSize'
+  ];
+  const out = {};
+  pick.forEach(k => { if (typeof all[k] === 'number') out[k] = +all[k].toFixed(4); });
+  out.JSHeapUsedMB = all.JSHeapUsedSize ? +(all.JSHeapUsedSize / 1048576).toFixed(1) : undefined;
+  if (out.JSHeapUsedMB === undefined) delete out.JSHeapUsedMB;
+  return { metrics: out };
+}
+
+// ---- 帧与子 target
+async function frames() {
+  const c = await ensure();
+  const tree = await c.send('Page.getFrameTree');
+  const flat = [];
+  (function walk(node) {
+    if (!node || !node.frame) return;
+    flat.push({
+      id: node.frame.id,
+      url: truncate(node.frame.url || '(空)', 140),
+      parentId: node.frame.parentId || undefined
+    });
+    (node.childFrames || []).forEach(walk);
+  })(tree.frameTree);
+
+  let detached = [];
+  try {
+    const t = await c.send('Target.getTargets');
+    detached = (t.targetInfos || [])
+      .filter(x => ['iframe', 'worker', 'shared_worker', 'service_worker'].includes(x.type))
+      .map(x => ({ type: x.type, url: truncate(x.url, 140), attached: !!x.attached }));
+  } catch (e) { /* 某些构建不支持 */ }
+
+  return {
+    frameCount: flat.length,
+    frames: flat,
+    subTargets: detached,
+    note: '跨域 iframe / worker 的内容要 Target.setAutoAttach 之后才读得到；这里只列出来'
+  };
+}
+
+
 const TOOLS = [
   {
     name: 'targets',
@@ -840,6 +1182,128 @@ const TOOLS = [
       },
       additionalProperties: false
     }
+  },
+  {
+    name: 'net_conditions',
+    description: '设置网络条件：禁缓存、模拟带宽与延迟、离线。配合 recorder reload 能量化真实首屏。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cacheDisabled: { type: 'boolean', description: '禁用 HTTP 缓存' },
+        latencyMs: { type: 'number', description: '额外延迟（毫秒）' },
+        downloadKbps: { type: 'number', description: '下行带宽（KB/s）' },
+        uploadKbps: { type: 'number', description: '上行带宽（KB/s）' },
+        offline: { type: 'boolean', description: '断网' },
+        reset: { type: 'boolean', description: '恢复默认（无延迟、不限速、缓存可用）' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'a11y_tree',
+    description: '读无障碍树：AI 看到的是「这是什么」（heading/link/button…），比读 DOM 省 token 且带语义。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        roles: { type: 'string', description: '只看这些角色，逗号分隔，如 heading,link,button' },
+        limit: { type: 'number', description: '最多返回多少个有名字的节点，默认 60' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'css_coverage',
+    description: '统计 CSS 规则使用率（重载后测量）：总规则数、用到/没用、按样式表分组。用来找死代码 CSS。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        reload: { type: 'boolean', description: '测量前是否重载页面，默认 true' },
+        waitMs: { type: 'number', description: '重载后等待毫秒数，默认 3000' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'emulate_media',
+    description: '模拟媒体特性：深色/浅色、打印、减少动效、强制色彩。用来一次抓多态样式。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scheme: { type: 'string', enum: ['dark', 'light'], description: 'prefers-color-scheme' },
+        media: { type: 'string', description: '媒体类型，如 print' },
+        reducedMotion: { type: 'string', enum: ['reduce', 'no-preference'] },
+        forcedColors: { type: 'string', enum: ['active', 'none'] },
+        reset: { type: 'boolean', description: '恢复默认' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'screenshot',
+    description: '截图存盘（不往上下文塞 base64）：整页、当前视口或某个元素。返回文件绝对路径与字节数。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '只截这个元素' },
+        fullPage: { type: 'boolean', description: '截整页（含视口外）' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'net_mock',
+    description: '拦截请求并返回伪造响应（Fetch 域）：mock 接口、改响应体、模拟错误状态码。用完记得 clear。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        urlPattern: { type: 'string', description: '正则字符串，匹配请求 URL，如 "/api/items"' },
+        status: { type: 'number', description: 'HTTP 状态码，默认 200' },
+        body: { type: 'string', description: '响应体' },
+        headers: { type: 'object', description: '响应头' },
+        clear: { type: 'boolean', description: '清空所有规则并关闭拦截' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'debugger_ctl',
+    description: 'JS 调试：设置暂停于异常、在某行下断点、等待暂停并读调用栈、恢复/关闭。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['exceptions', 'break', 'wait', 'resume', 'off'] },
+        state: { type: 'string', enum: ['none', 'uncaught', 'all'], description: 'exceptions 用' },
+        urlRegex: { type: 'string', description: 'break 用，匹配脚本 URL' },
+        lineNumber: { type: 'number', description: 'break 用，0 起算' },
+        timeoutMs: { type: 'number', description: 'wait 用，默认 8000' },
+        resume: { type: 'boolean', description: 'wait 拿到栈后是否自动恢复，默认 true' }
+      },
+      required: ['action'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'highlight',
+    description: '在页面上高亮某个元素（Overlay 域），用来和人确认「你说的就是这块」。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string' },
+        color: { type: 'string', description: '十六进制，如 #00b3ff' },
+        clear: { type: 'boolean', description: '清除高亮' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'perf_metrics',
+    description: '读性能指标：布局/样式重算次数与耗时、脚本耗时、堆内存、节点数。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'frames',
+    description: '列出页面所有 frame 与子 target（iframe / worker / service worker），用来判断内容是不是在别的 frame 里。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   }
 ];
 
@@ -852,7 +1316,17 @@ const IMPL = {
   element_style: elementStyle,
   console_logs: consoleLogs,
   run_js: runJs,
-  recorder: recorder
+  recorder: recorder,
+  net_conditions: netConditions,
+  a11y_tree: a11yTree,
+  css_coverage: cssCoverage,
+  emulate_media: emulateMedia,
+  screenshot: screenshot,
+  net_mock: netMock,
+  debugger_ctl: debuggerCtl,
+  highlight: highlight,
+  perf_metrics: perfMetrics,
+  frames: frames
 };
 
 function send(obj) {
