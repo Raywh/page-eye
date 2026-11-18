@@ -59,7 +59,7 @@ mcp-cdp/              MCP server：通过 CDP 把页面的内容 / 行为 / 网�
 trae-style-snapshot/  浏览器脚本：把渲染后的样式压成一段 AI 能读的 JSON
 ```
 
-## 19 个工具，按你熟悉的 DevTools 面板组织
+## 20 个工具，按你熟悉的 DevTools 面板组织
 
 这套接口基本对应你在 DevTools 里手动做的事。
 
@@ -81,6 +81,7 @@ trae-style-snapshot/  浏览器脚本：把渲染后的样式压成一段 AI 能
 | `element_style` | 计算值 + 变量溯源（见上） |
 | `css_coverage` | 重载后统计 CSS 规则使用率：总数、用到、没用、按样式表分组——找死代码 |
 | `emulate_media` | 强制 `prefers-color-scheme`、`print`、`prefers-reduced-motion`，一次抓多态 |
+| `resize` | 改视口（手机/平板/桌面），可选重载，并回一份体检：横向溢出、越界元素、小于 32px 的点按目标 |
 
 ### Console —— 看消息、跑 JavaScript
 
@@ -123,7 +124,7 @@ trae-style-snapshot/  浏览器脚本：把渲染后的样式压成一段 AI 能
 | | **page-eye** | **chrome-devtools-mcp** | **chrome-inspector-mcp** |
 | --- | --- | --- | --- |
 | 维护方 | 本仓库 | Google / ChromeDevTools | 社区（devtoolcss） |
-| 工具数 | 19 | 63（若干分类需额外 flag 才开） | 6 |
+| 工具数 | 20 | 63（若干分类需额外 flag 才开） | 6 |
 | 安装 | 克隆后 `node server.mjs` | `npx -y chrome-devtools-mcp@latest` | npx + 装一个 Chrome 扩展 |
 | 依赖 | 无 | Puppeteer、npm、Node LTS | Chrome 扩展 |
 | 遥测 | 无 | 默认上报使用统计；trace 可能发往 CrUX | 无 |
@@ -180,11 +181,11 @@ node mcp-cdp/run-tests.mjs service      # 只跑某个套件
 | 套件 | 条数 | 覆盖 |
 | --- | --- | --- |
 | `transport` | 44 | MCP 握手、真实 200/404/500、POST 体、大 body 落盘、console 各级别、未捕获异常、多标签切换、`element_style` |
-| `capabilities` | 22 | 十项扩展工具的正常路径 + 副作用检查 |
-| `service` | 41 | 协议层（未知方法、坏 JSON、缺参数）、每个工具的错误路径、并发、进程生命周期 |
+| `capabilities` | 25 | 十项扩展工具的正常路径 + 副作用检查 |
+| `service` | 43 | 协议层（未知方法、坏 JSON、缺参数）、每个工具的错误路径、并发、进程生命周期 |
 | `concurrency-5` / `-12` | 各 3 | 并行调用只建一条 CDP 连接，事件不重复 |
 
-**113 / 113，连续三次全跑通过。**
+**118 / 118，连续三次全跑通过。**
 
 `trae-style-snapshot` 有自己的一套：**51** 条断言、**12** 个边界输入不抛异常、4809 节点压力测试。
 

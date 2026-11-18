@@ -150,6 +150,30 @@ Chrome marks a rule "used" when it matched at least one element — so this is m
 ```
 Forces media features and reports what the page now sees (`scheme`, `bodyBg`, `bodyColor`). `{ "reset": true }` restores defaults.
 
+#### `resize`
+```json
+{ "width": 390, "height": 844, "mobile": true, "reload": true }
+{ "reset": true }
+```
+Resizes the layout viewport and returns a check:
+
+```json
+{
+  "viewport": "390x844",
+  "windowWidth": 390,
+  "scrollbarPx": 0,
+  "horizontalOverflow": false,
+  "overflowPx": 0,
+  "offenders": [],
+  "smallTapTargets": 1
+}
+```
+
+Two details worth knowing:
+
+- `viewport` comes from `clientWidth`, which excludes the scrollbar; `windowWidth` is `innerWidth`. On desktop the 15px difference is a scrollbar, not a bug — `scrollbarPx` reports it explicitly.
+- With `mobile: true`, a page **without** `<meta name="viewport" content="width=device-width">` lays out at 980px and scales down. When that happens the response carries a `note` explaining it, instead of silently reporting a viewport you did not ask for.
+
 ### Console
 
 #### `console_logs`
@@ -251,9 +275,11 @@ The runner starts the fixture server and a **fresh Chrome per suite**, so suites
 | Suite | Checks | Covers |
 | --- | --- | --- |
 | `transport` (`test-client.mjs`) | 44 | handshake, 200/404/500, POST body, body spill, console levels, tab switching, `element_style` |
-| `capabilities` (`capabilities-test.mjs`) | 22 | the ten extended tools, happy path + side effects |
-| `service` (`suite-service.mjs`) | 41 | protocol errors, every tool's error path, lifecycle |
+| `capabilities` (`capabilities-test.mjs`) | 25 | the ten extended tools, happy path + side effects |
+| `service` (`suite-service.mjs`) | 43 | protocol errors, every tool's error path, lifecycle |
 | `concurrency` (`concurrency-test.mjs`) | 3 × 2 | one CDP connection, no duplicate events |
+
+**118 / 118 across all suites.**
 
 Writing `suite-service.mjs` immediately found two real bugs that the earlier suites had hidden:
 

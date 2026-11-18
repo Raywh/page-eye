@@ -930,6 +930,81 @@ async function screenshot(args = {}) {
   return { path: file, bytes: buf.length, clip };
 }
 
+// ---- 视口：模拟不同屏幕宽度并体检布局
+const viewportState = { active: false };
+
+async function resize(args = {}) {
+  const c = await ensure();
+
+  if (args.reset) {
+    await c.send('Emulation.clearDeviceMetricsOverride');
+    viewportState.active = false;
+    return { ok: true, reset: true };
+  }
+
+  const width = Number(args.width || 0);
+  const height = Number(args.height || 0);
+  if (!width || !height) throw new Error('需要 width 和 height（恢复默认用 reset: true）');
+
+  const dsf = Number(args.deviceScaleFactor || 1);
+  await c.send('Emulation.setDeviceMetricsOverride', {
+    width, height, deviceScaleFactor: dsf, mobile: !!args.mobile
+  });
+  Object.assign(viewportState, { active: true, width, height, mobile: !!args.mobile, dsf });
+
+  if (args.reload) {
+    await c.send('Page.reload', { ignoreCache: !!args.ignoreCache });
+    await sleep(args.waitMs || 2500);
+  }
+
+  // 附带体检：横向溢出 + 过小的点按目标
+  const r = await c.send('Runtime.evaluate', {
+    expression: `(() => {
+      const de = document.documentElement;
+      const vw = de.clientWidth;
+      const offenders = Array.from(document.querySelectorAll('body *'))
+        .map(function (el) { return { el: el, b: el.getBoundingClientRect() }; })
+        .filter(function (x) { return x.b.width > 0 && x.b.right > vw + 1; })
+        .slice(0, 8)
+        .map(function (x) {
+          return {
+            tag: x.el.tagName.toLowerCase(),
+            cls: typeof x.el.className === 'string' ? x.el.className.split(' ').slice(0, 2).join('.') : '',
+            right: Math.round(x.b.right),
+            width: Math.round(x.b.width)
+          };
+        });
+      const smallTargets = Array.from(document.querySelectorAll('button, a[href]'))
+        .filter(function (el) { const b = el.getBoundingClientRect(); return b.width > 0 && (b.height < 32 || b.width < 32); })
+        .length;
+      return {
+        viewport: vw + 'x' + de.clientHeight,
+        windowWidth: window.innerWidth,
+        scrollbarPx: Math.max(0, window.innerWidth - vw),
+        scrollWidth: de.scrollWidth,
+        horizontalOverflow: de.scrollWidth > vw + 1,
+        overflowPx: Math.max(0, de.scrollWidth - vw),
+        offenders: offenders,
+        smallTapTargets: smallTargets
+      };
+    })()`,
+    returnByValue: true
+  });
+
+  const measured = (r.result && r.result.value) || {};
+  const out = { ok: true, applied: { ...viewportState }, ...measured };
+
+  // 桌面端 clientWidth 会比 innerWidth 少一个滚动条宽度（约 15px），这是正常的。
+  // 只有移动端模式下差得很大（页面按 980px 排版）才说明缺 viewport meta。
+  const layoutW = parseInt(String(measured.viewport || '').split('x')[0], 10);
+  const diff = layoutW ? Math.abs(layoutW - viewportState.width) : 0;
+  if (viewportState.mobile && diff > 100) {
+    out.note = `布局视口是 ${layoutW}px，而请求的是 ${viewportState.width}px —— `
+      + '页面缺少 <meta name="viewport" content="width=device-width">，移动端会按 980px 排版再缩放';
+  }
+  return out;
+}
+
 // ---- 请求 mock / 改响应
 async function netMock(args = {}) {
   const c = await ensure();
@@ -1256,6 +1331,24 @@ const TOOLS = [
     }
   },
   {
+    name: 'resize',
+    description: '改视口尺寸（模拟手机/平板/桌面），可选重载，并顺带体检横向溢出和过小的点按目标。恢复默认用 reset。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        width: { type: 'number', description: '视口宽（CSS 像素）' },
+        height: { type: 'number', description: '视口高' },
+        mobile: { type: 'boolean', description: '按移动端模式渲染（触摸、视口 meta）' },
+        deviceScaleFactor: { type: 'number', description: '像素比，默认 1' },
+        reload: { type: 'boolean', description: '改完是否重载页面' },
+        ignoreCache: { type: 'boolean', description: '重载时是否绕缓存' },
+        waitMs: { type: 'number', description: '重载后等待毫秒，默认 2500' },
+        reset: { type: 'boolean', description: '恢复默认视口' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: 'net_mock',
     description: '拦截请求并返回伪造响应（Fetch 域）：mock 接口、改响应体、模拟错误状态码。用完记得 clear。',
     inputSchema: {
@@ -1327,6 +1420,7 @@ const IMPL = {
   css_coverage: cssCoverage,
   emulate_media: emulateMedia,
   screenshot: screenshot,
+  resize: resize,
   net_mock: netMock,
   debugger_ctl: debuggerCtl,
   highlight: highlight,

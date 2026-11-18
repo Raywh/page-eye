@@ -38,9 +38,9 @@ proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initial
 
 // 0. 工具清单
 const list = await rpc('tools/list', {});
-record('工具总数为 19', list.tools.length === 19, list.tools.length);
+record('工具总数为 20', list.tools.length === 20, list.tools.length);
 const names = list.tools.map(t => t.name);
-['net_conditions', 'a11y_tree', 'css_coverage', 'emulate_media', 'screenshot', 'net_mock', 'debugger_ctl', 'highlight', 'perf_metrics', 'frames']
+['net_conditions', 'a11y_tree', 'css_coverage', 'emulate_media', 'screenshot', 'net_mock', 'debugger_ctl', 'highlight', 'perf_metrics', 'frames', 'resize']
   .forEach(n => record('新工具已注册: ' + n, names.includes(n), null));
 
 // 1. 网络条件
@@ -126,6 +126,25 @@ await step('frames 列出 frame', async () => {
   const r = await call('frames');
   if (!(r.frameCount >= 1)) throw new Error('frameCount=0');
   return `${r.frameCount} 个 frame，主 frame ${r.frames[0].url}`;
+});
+
+// 11. 视口
+await step('resize 改到 390 宽并体检布局', async () => {
+  await call('resize', { width: 390, height: 844, mobile: true, reload: true, waitMs: 1200 });
+  const r = await call('resize', { width: 390, height: 844, mobile: true });
+  if (r.applied.width !== 390) throw new Error('applied.width=' + r.applied.width);
+  if (typeof r.horizontalOverflow !== 'boolean') throw new Error('缺少 horizontalOverflow');
+  // 夹具没有 viewport meta，布局视口会回退到 980 —— 工具应当解释这件事
+  if (!r.note) throw new Error('视口与请求不一致时缺少解释 note');
+  return `请求 390，布局 ${r.viewport}（已给出 note），溢出 ${r.overflowPx}px`;
+});
+
+await step('resize reset 恢复默认视口', async () => {
+  const r = await call('resize', { reset: true });
+  if (!r.ok) throw new Error(JSON.stringify(r));
+  const v = await call('run_js', { expression: 'innerWidth' });
+  if (!(v.value > 1000)) throw new Error('恢复后宽度 ' + v.value);
+  return '恢复为 ' + v.value + 'px';
 });
 
 await sleep(200);

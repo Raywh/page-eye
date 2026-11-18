@@ -1,4 +1,4 @@
-// 全服务测例：协议层 + 19 个工具的正常路径与错误路径 + 生命周期
+// 全服务测例：协议层 + 20 个工具的正常路径与错误路径 + 生命周期
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
@@ -285,6 +285,19 @@ await it('perf_metrics 返回数值指标', async () => {
   const r = await c.call('perf_metrics');
   assert(r.metrics && r.metrics.Nodes > 0, JSON.stringify(r.metrics));
   assert(typeof r.metrics.LayoutCount === 'number', 'LayoutCount');
+});
+
+// ---------------------------------------------------------------- 视口
+await it('resize 缺尺寸时报 isError', async () => {
+  try { await c.call('resize', {}); throw new Error('竟然成功了'); }
+  catch (e) { assert(e.toolError && /width/.test(e.message), e.message); }
+});
+
+await it('resize 设置后能读回并恢复', async () => {
+  const a = await c.call('resize', { width: 480, height: 900 });
+  assert(String(a.viewport).startsWith('480x'), a.viewport);
+  const b = await c.call('resize', { reset: true });
+  assert(b.ok, 'reset');
 });
 
 // ---------------------------------------------------------------- 并发与生命周期

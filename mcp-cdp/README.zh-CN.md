@@ -150,6 +150,30 @@ Chrome 的判据是「这条规则匹配到了至少一个元素」——所以�
 ```
 强制媒体特性，并回报页面此刻看到的值（`scheme`、`bodyBg`、`bodyColor`）。`{ "reset": true }` 恢复。
 
+#### `resize`
+```json
+{ "width": 390, "height": 844, "mobile": true, "reload": true }
+{ "reset": true }
+```
+改布局视口，并顺带做一次体检：
+
+```json
+{
+  "viewport": "390x844",
+  "windowWidth": 390,
+  "scrollbarPx": 0,
+  "horizontalOverflow": false,
+  "overflowPx": 0,
+  "offenders": [],
+  "smallTapTargets": 1
+}
+```
+
+两个需要注意的细节：
+
+- `viewport` 取的是 `clientWidth`（不含滚动条），`windowWidth` 是 `innerWidth`。桌面上那 15px 差值是滚动条，不是 bug——`scrollbarPx` 会明确报出来。
+- `mobile: true` 时，页面如果**没有** `<meta name="viewport" content="width=device-width">`，会按 980px 排版再缩放。出现这种情况时响应里会带一条 `note` 解释，而不是悄悄给你一个你没要的视口。
+
 ### Console
 
 #### `console_logs`
@@ -251,9 +275,11 @@ node run-tests.mjs service      # 只跑某个套件
 | 套件 | 条数 | 覆盖 |
 | --- | --- | --- |
 | `transport`（`test-client.mjs`） | 44 | 握手、200/404/500、POST 体、大 body 落盘、console 各级别、多标签切换、`element_style` |
-| `capabilities`（`capabilities-test.mjs`） | 22 | 十项扩展工具的正常路径 + 副作用 |
-| `service`（`suite-service.mjs`） | 41 | 协议错误、每个工具的错误路径、生命周期 |
+| `capabilities`（`capabilities-test.mjs`） | 25 | 十项扩展工具的正常路径 + 副作用 |
+| `service`（`suite-service.mjs`） | 43 | 协议错误、每个工具的错误路径、生命周期 |
 | `concurrency`（`concurrency-test.mjs`） | 各 3 | 只建一条 CDP 连接，事件不重复 |
+
+**全部套件合计 118 / 118。**
 
 写 `suite-service.mjs` 时立刻抓出两个被旧套件掩盖的真 bug：
 
