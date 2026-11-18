@@ -1006,15 +1006,30 @@ async function resize(args = {}) {
 }
 
 // ---- 导航
+let lastGoodOrigin = null;
+
+async function currentOrigin(c) {
+  try {
+    const o = await c.send('Runtime.evaluate', { expression: 'location.origin', returnByValue: true });
+    const v = o.result && o.result.value;
+    if (v && /^https?:\/\//.test(v)) return v;
+  } catch (e) { /* 错误页 / 上下文失效 */ }
+  return lastGoodOrigin;   // 回落到上一次成功的 origin，便于从错误页恢复
+}
+
 async function navigate(args = {}) {
   const c = await ensure();
   let url = String(args.url || '').trim();
   if (!url) throw new Error('需要 url（绝对地址，或站内路径如 /add）');
 
   if (url.startsWith('/') || url.startsWith('?')) {
-    const o = await c.send('Runtime.evaluate', { expression: 'location.origin', returnByValue: true });
-    const origin = o.result && o.result.value;
-    if (!origin) throw new Error('拿不到当前 origin，请传绝对地址');
+    const origin = await currentOrigin(c);
+    if (!origin) {
+      return {
+        error: '当前页面没有可用的 origin（可能停在错误页），请传完整 URL',
+        requested: url
+      };
+    }
     url = origin + url;
   }
 
@@ -1043,12 +1058,183 @@ async function navigate(args = {}) {
 
   if (args.settleMs !== 0) await sleep(args.settleMs || 400);
 
+  // 记住可用的 origin，错误页之后还能用站内路径恢复
+  if (last && last.href && /^https?:\/\//.test(last.href)) {
+    try { lastGoodOrigin = new URL(last.href).origin; } catch (e) {}
+  }
+
   return {
     ok: true,
     requested: url,
     final: last && last.href,
     title: last && last.title,
     readyState: last && last.ready
+  };
+}
+
+// ---- 交互：滚动 / 点击 / 填表 / 按键，并回报前后差值
+async function pageSnapshot(c) {
+  const r = await c.send('Runtime.evaluate', {
+    expression: `({
+      url: location.href,
+      title: document.title,
+      nodes: document.querySelectorAll('*').length,
+      textLength: document.body ? document.body.innerText.length : 0,
+      scrollY: Math.round(window.scrollY),
+      scrollHeight: document.documentElement.scrollHeight
+    })`,
+    returnByValue: true
+  });
+  const v = (r.result && r.result.value) || {};
+  return { ...v, requests: state.requests.size, logs: state.logs.length };
+}
+
+async function evalValue(c, expr) {
+  const r = await c.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
+  if (r.exceptionDetails) throw new Error(r.exceptionDetails.text || '页面执行失败');
+  return r.result && r.result.value;
+}
+
+async function doScroll(c, args) {
+  const steps = Math.min(Number(args.steps) || 15, 80);
+  const wait = Number(args.waitMs) || 450;
+  const to = args.to === 'top' ? 'top' : 'bottom';
+
+  if (to === 'top') {
+    await evalValue(c, 'window.scrollTo(0, 0); 1');
+    await sleep(wait);
+    return { scrolled: 'top' };
+  }
+
+  const h0 = await evalValue(c, 'document.documentElement.scrollHeight');
+  let lastH = h0, stagnant = 0, done = 0;
+
+  for (let i = 0; i < steps; i++) {
+    done++;
+    await evalValue(c, 'window.scrollBy(0, Math.max(200, Math.round(innerHeight * 0.9))); 1');
+    await sleep(wait);
+
+    const h = await evalValue(c, 'document.documentElement.scrollHeight');
+    const atBottom = await evalValue(c, '(innerHeight + scrollY) >= document.documentElement.scrollHeight - 2');
+
+    if (h !== lastH) { lastH = h; stagnant = 0; }
+    else if (atBottom) { stagnant++; if (stagnant >= 2) break; }   // 到底且高度不再变 → 没有再加载
+  }
+
+  const h1 = await evalValue(c, 'document.documentElement.scrollHeight');
+  return { scrolled: 'bottom', steps: done, heightBefore: h0, heightAfter: h1, grewPx: h1 - h0 };
+}
+
+// 页面里找元素的统一入口：选择器 > placeholder > 文字
+const FIND_JS = `
+function __peFind(sel, text, ph) {
+  if (sel) { const e = document.querySelector(sel); if (e) return e; }
+  if (ph) {
+    const e = document.querySelector('[placeholder*="' + ph + '"]');
+    if (e) return e;
+  }
+  if (text) {
+    const t = String(text).trim();
+    const cands = Array.from(document.querySelectorAll('button,a,[role="button"],li,label,option'));
+    return cands.find(e => (e.innerText || '').trim() === t)
+        || cands.find(e => (e.innerText || '').trim().indexOf(t) === 0);
+  }
+  return null;
+}
+`;
+
+function targetArgs(args) {
+  return [JSON.stringify(args.selector || null), JSON.stringify(args.text || null), JSON.stringify(args.placeholder || null)].join(', ');
+}
+
+function describeTarget(args) {
+  return args.selector || (args.placeholder ? `[placeholder*="${args.placeholder}"]` : null) || (args.text ? `文字「${args.text}」` : '(空)');
+}
+
+async function doClick(c, args) {
+  const r = await evalValue(c, `(() => { ${FIND_JS}
+    const el = __peFind(${targetArgs(args)});
+    if (!el) return null;
+    el.scrollIntoView({ block: 'center' });
+    const label = (el.innerText || el.value || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+    el.click();
+    return { clicked: el.tagName.toLowerCase(), label };
+  })()`);
+  return r || { error: '没有匹配到元素：' + describeTarget(args) };
+}
+
+async function doFill(c, args) {
+  const value = args.value == null ? '' : String(args.value);
+  const r = await evalValue(c, `(() => { ${FIND_JS}
+    const el = __peFind(${targetArgs(args)});
+    if (!el) return null;
+    el.focus();
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+      : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype
+      : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+    setter.call(el, ${JSON.stringify(value)});
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { filled: el.tagName.toLowerCase(), value: String(el.value).slice(0, 40) };
+  })()`);
+  return r || { error: '没有匹配到元素：' + describeTarget(args) };
+}
+
+async function doSelect(c, args) {
+  return doFill(c, args);
+}
+
+async function doPress(c, args) {
+  const key = String(args.key || 'Enter');
+  const map = {
+    Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 },
+    Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
+    Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
+    ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
+    ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 }
+  };
+  const k = map[key];
+  if (!k) throw new Error('只支持 Enter / Tab / Escape / ArrowDown / ArrowUp');
+  await c.send('Input.dispatchKeyEvent', { type: 'keyDown', ...k, text: key === 'Enter' ? '\r' : undefined });
+  await c.send('Input.dispatchKeyEvent', { type: 'keyUp', ...k });
+  return { pressed: key };
+}
+
+async function interact(args = {}) {
+  const c = await ensure();
+  const action = String(args.action || '').trim();
+  if (!['scroll', 'click', 'fill', 'select', 'press'].includes(action)) {
+    throw new Error('action 只能是 scroll / click / fill / select / press');
+  }
+
+  const before = await pageSnapshot(c);
+  let detail = {};
+
+  if (action === 'scroll') detail = await doScroll(c, args);
+  else if (action === 'click') detail = await doClick(c, args);
+  else if (action === 'fill') detail = await doFill(c, args);
+  else if (action === 'select') detail = await doSelect(c, args);
+  else if (action === 'press') detail = await doPress(c, args);
+
+  if (detail && detail.error) return { error: detail.error };
+
+  await sleep(Number(args.settleMs) || 900);   // 等请求与渲染
+  const after = await pageSnapshot(c);
+
+  return {
+    ok: true,
+    action,
+    ...detail,
+    changed: {
+      url: before.url !== after.url ? `${before.url} → ${after.url}` : undefined,
+      nodes: after.nodes - before.nodes,
+      textLength: after.textLength - before.textLength,
+      requests: after.requests - before.requests,
+      logs: after.logs - before.logs,
+      scrollY: after.scrollY
+    },
+    snapshot: { before, after }
   };
 }
 
@@ -1410,6 +1596,27 @@ const TOOLS = [
     }
   },
   {
+    name: 'interact',
+    description: '在页面上做一次交互并回报前后差值：scroll（滚到底可触发懒加载）、click、fill（填输入框，兼容 Vue/React 绑定）、select、press（Enter/Tab 等）。返回 URL / DOM / 文本 / 请求 / 日志的变化量。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['scroll', 'click', 'fill', 'select', 'press'] },
+        selector: { type: 'string', description: 'CSS 选择器（首选）' },
+        text: { type: 'string', description: '按可见文字定位（如按钮文案「Vue」）' },
+        placeholder: { type: 'string', description: '按输入框 placeholder 定位' },
+        value: { type: 'string', description: 'fill / select 用' },
+        key: { type: 'string', description: 'press 用：Enter / Tab / Escape / ArrowDown / ArrowUp' },
+        to: { type: 'string', enum: ['bottom', 'top'], description: 'scroll 方向，默认 bottom' },
+        steps: { type: 'number', description: 'scroll 最多滚几屏，默认 15' },
+        waitMs: { type: 'number', description: '每步等待，默认 450' },
+        settleMs: { type: 'number', description: '动作后等待渲染，默认 900' }
+      },
+      required: ['action'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'net_mock',
     description: '拦截请求并返回伪造响应（Fetch 域）：mock 接口、改响应体、模拟错误状态码。用完记得 clear。',
     inputSchema: {
@@ -1483,6 +1690,7 @@ const IMPL = {
   screenshot: screenshot,
   navigate: navigate,
   resize: resize,
+  interact: interact,
   net_mock: netMock,
   debugger_ctl: debuggerCtl,
   highlight: highlight,

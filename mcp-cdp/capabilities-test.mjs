@@ -38,9 +38,9 @@ proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initial
 
 // 0. 工具清单
 const list = await rpc('tools/list', {});
-record('工具总数为 21', list.tools.length === 21, list.tools.length);
+record('工具总数为 22', list.tools.length === 22, list.tools.length);
 const names = list.tools.map(t => t.name);
-['net_conditions', 'a11y_tree', 'css_coverage', 'emulate_media', 'screenshot', 'net_mock', 'debugger_ctl', 'highlight', 'perf_metrics', 'frames', 'resize', 'navigate']
+['net_conditions', 'a11y_tree', 'css_coverage', 'emulate_media', 'screenshot', 'net_mock', 'debugger_ctl', 'highlight', 'perf_metrics', 'frames', 'resize', 'navigate', 'interact']
   .forEach(n => record('新工具已注册: ' + n, names.includes(n), null));
 
 // 1. 网络条件
@@ -162,6 +162,47 @@ await step('navigate 非法 URL 返回 error 不崩', async () => {
   if (!r.error && r.ok) throw new Error('竟然成功了');
   await call('navigate', { url: '/', settleMs: 600 });
   return r.error ? 'error: ' + String(r.error).slice(0, 60) : '已回到首页';
+});
+
+// 13. 交互
+await step('interact fill 能触发输入绑定', async () => {
+  const r = await call('interact', { action: 'fill', selector: '#kw', value: '闭包', settleMs: 300 });
+  if (!r.ok) throw new Error(JSON.stringify(r));
+  const echo = await call('run_js', { expression: `document.getElementById('echo').textContent` });
+  if (echo.value !== 'kw=闭包') throw new Error('echo=' + echo.value);
+  return 'echo 变为 ' + echo.value;
+});
+
+await step('interact click 能触发事件', async () => {
+  await call('recorder', { action: 'clear' });
+  const r = await call('interact', { action: 'click', selector: '#btn-a', settleMs: 400 });
+  if (!r.ok) { const u = await call('run_js', { expression: 'location.href' }); throw new Error(JSON.stringify(r) + ' @ ' + u.value); }
+  const logs = await call('console_logs', { contains: 'btn-a clicked' });
+  if (!logs.logs.length) throw new Error('点击后没有 console');
+  return '点击后新增日志 ' + r.changed.logs + ' 条';
+});
+
+await step('interact scroll 能滚到底', async () => {
+  const r = await call('interact', { action: 'scroll', to: 'bottom', steps: 6, waitMs: 150 });
+  if (!r.ok || r.scrolled !== 'bottom') throw new Error(JSON.stringify(r));
+  return `滚了 ${r.steps} 步，高度 ${r.heightBefore} → ${r.heightAfter}`;
+});
+
+await step('interact 能按文字点击', async () => {
+  await call('recorder', { action: 'clear' });
+  const r = await call('interact', { action: 'click', text: '点我', settleMs: 400 });
+  if (!r.ok || r.clicked !== 'button') throw new Error(JSON.stringify(r));
+  const logs = await call('console_logs', { contains: 'btn-a clicked' });
+  if (!logs.logs.length) throw new Error('按文字点击没触发');
+  return '点到「' + r.label + '」';
+});
+
+await step('interact 能按 placeholder 填表', async () => {
+  const r = await call('interact', { action: 'fill', placeholder: '搜索题目', value: '事件循环', settleMs: 300 });
+  if (!r.ok) throw new Error(JSON.stringify(r));
+  const echo = await call('run_js', { expression: `document.getElementById('echo').textContent` });
+  if (echo.value !== 'kw=事件循环') throw new Error('echo=' + echo.value);
+  return 'placeholder 定位成功，echo=' + echo.value;
 });
 
 await sleep(200);

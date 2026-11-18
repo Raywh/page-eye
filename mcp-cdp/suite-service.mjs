@@ -300,6 +300,22 @@ await it('resize 设置后能读回并恢复', async () => {
   assert(b.ok, 'reset');
 });
 
+// ---------------------------------------------------------------- 交互
+await it('interact 缺 action 报 isError', async () => {
+  try { await c.call('interact', {}); throw new Error('竟然成功了'); }
+  catch (e) { assert(e.toolError && /action/.test(e.message), e.message); }
+});
+
+await it('interact 非法 action 报 isError', async () => {
+  try { await c.call('interact', { action: 'drag' }); throw new Error('竟然成功了'); }
+  catch (e) { assert(e.toolError, e.message); }
+});
+
+await it('interact 选不到元素时返回 error', async () => {
+  const r = await c.call('interact', { action: 'click', selector: '.not-here-xyz' });
+  assert(r.error, '应返回 error');
+});
+
 // ---------------------------------------------------------------- 并发与生命周期
 await it('并行 6 个调用全部成功', async () => {
   const rs = await Promise.all(Array.from({ length: 6 }, (_, i) =>

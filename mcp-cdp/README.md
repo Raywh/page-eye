@@ -75,7 +75,30 @@ Pins the session to a tab. Switching clears the capture buffers.
 ```json
 { "url": "/add", "settleMs": 400 }
 ```
-Accepts an in-site path or an absolute URL, waits for `readyState === 'complete'`, then waits `settleMs` more for the app to render. Returns the final URL and title. If Chrome refuses the URL it returns `{ error }` instead of throwing.
+Accepts an in-site path or an absolute URL, waits for `readyState === 'complete'`, then waits `settleMs` more for the app to render. Returns the final URL and title. If Chrome refuses the URL it returns `{ error }` instead of throwing. It also remembers the last good origin, so you can recover with a relative path after landing on an error page.
+
+#### `interact`
+```json
+{ "action": "scroll", "to": "bottom", "steps": 30, "waitMs": 500 }
+{ "action": "click", "text": "Vue" }
+{ "action": "fill", "placeholder": "搜索题目关键词", "value": "闭包" }
+{ "action": "press", "key": "Enter" }
+```
+Targets can be a CSS `selector`, a visible `text` (exact match first, then prefix), or a `placeholder`. Fill uses the native value setter plus `input`/`change` events so Vue and React bindings pick it up.
+
+Every call returns what changed, which is the point:
+
+```json
+{
+  "ok": true,
+  "action": "click",
+  "clicked": "button",
+  "label": "Vue",
+  "changed": { "nodes": 0, "textLength": 125, "requests": 1, "logs": 0 }
+}
+```
+
+`scroll` stops early once the page height stops growing, so it terminates on pages without lazy loading instead of looping for 30 steps.
 
 ### Elements
 
@@ -281,11 +304,11 @@ The runner starts the fixture server and a **fresh Chrome per suite**, so suites
 | Suite | Checks | Covers |
 | --- | --- | --- |
 | `transport` (`test-client.mjs`) | 44 | handshake, 200/404/500, POST body, body spill, console levels, tab switching, `element_style` |
-| `capabilities` (`capabilities-test.mjs`) | 28 | the ten extended tools, happy path + side effects |
-| `service` (`suite-service.mjs`) | 43 | protocol errors, every tool's error path, lifecycle |
+| `capabilities` (`capabilities-test.mjs`) | 34 | the ten extended tools, happy path + side effects |
+| `service` (`suite-service.mjs`) | 46 | protocol errors, every tool's error path, lifecycle |
 | `concurrency` (`concurrency-test.mjs`) | 3 × 2 | one CDP connection, no duplicate events |
 
-**121 / 121 across all suites.**
+**130 / 130 across all suites.**
 
 Writing `suite-service.mjs` immediately found two real bugs that the earlier suites had hidden:
 

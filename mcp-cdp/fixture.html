@@ -19,6 +19,10 @@
     <button id="btn-a">点我</button>
     <button id="btn-b">也会记一条 console</button>
   </div>
+  <div class="row">
+    <input id="kw" placeholder="搜索题目" />
+    <p id="echo"></p>
+  </div>
 </main>
 <script>
 (async () => {
@@ -29,6 +33,11 @@
 
   document.getElementById('btn-a').addEventListener('click', () => {
     console.log('btn-a clicked');
+  });
+
+  // 给 interact 的 fill 用：模拟受控输入
+  document.getElementById('kw').addEventListener('input', e => {
+    document.getElementById('echo').textContent = 'kw=' + e.target.value;
   });
 
   const hit = (u, opt) => fetch(u, opt).catch(e => console.warn('fetch failed:', e.message));
