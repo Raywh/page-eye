@@ -59,7 +59,7 @@ mcp-cdp/              MCP server: page content, behaviour and network over CDP
 trae-style-snapshot/  Browser script: rendered styles as JSON your AI can read
 ```
 
-## 20 tools, mapped to the DevTools panels you already know
+## 21 tools, mapped to the DevTools panels you already know
 
 The surface mirrors what you would do by hand in DevTools.
 
@@ -118,13 +118,14 @@ The surface mirrors what you would do by hand in DevTools.
 | `targets` | List debuggable tabs, mark the one currently attached |
 | `use_target` | Switch to another tab by index / id / URL fragment |
 | `recorder` | `status`, `clear` the buffers, or `reload` and record from zero |
+| `navigate` | Open a URL or an in-site path (`/add`), waiting for `readyState` to reach `complete` |
 
 ## How it compares
 
 | | **page-eye** | **chrome-devtools-mcp** | **chrome-inspector-mcp** |
 | --- | --- | --- | --- |
 | Maintainer | this repo | Google / ChromeDevTools | community (devtoolcss) |
-| Tools | 20 | 63 (several categories behind flags) | 6 |
+| Tools | 21 | 63 (several categories behind flags) | 6 |
 | Install | clone, `node server.mjs` | `npx -y chrome-devtools-mcp@latest` | npx + a Chrome extension |
 | Dependencies | none | Puppeteer, npm, Node LTS | Chrome extension |
 | Telemetry | none | usage stats on by default; traces may be sent to CrUX | none |
@@ -182,11 +183,11 @@ node mcp-cdp/run-tests.mjs service      # a single suite
 | Suite | Checks | Covers |
 | --- | --- | --- |
 | `transport` | 44 | MCP handshake, real 200/404/500, POST body, body spill to disk, console levels, uncaught exceptions, tab switching, `element_style` |
-| `capabilities` | 25 | All ten extended tools, happy path with side-effect assertions |
+| `capabilities` | 28 | All ten extended tools, happy path with side-effect assertions |
 | `service` | 43 | Protocol layer (unknown method, malformed JSON, missing arguments), every tool's error path, concurrency, process lifecycle |
 | `concurrency-5` / `-12` | 3 each | Parallel calls open exactly one CDP connection and record each event once |
 
-**118 / 118, three consecutive full runs.**
+**121 / 121, three consecutive full runs.**
 
 `trae-style-snapshot` keeps its own suites: **51** assertions, **12** edge inputs with no exceptions, plus a 4809-node stress run.
 

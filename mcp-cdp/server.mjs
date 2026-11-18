@@ -1005,6 +1005,53 @@ async function resize(args = {}) {
   return out;
 }
 
+// ---- 导航
+async function navigate(args = {}) {
+  const c = await ensure();
+  let url = String(args.url || '').trim();
+  if (!url) throw new Error('需要 url（绝对地址，或站内路径如 /add）');
+
+  if (url.startsWith('/') || url.startsWith('?')) {
+    const o = await c.send('Runtime.evaluate', { expression: 'location.origin', returnByValue: true });
+    const origin = o.result && o.result.value;
+    if (!origin) throw new Error('拿不到当前 origin，请传绝对地址');
+    url = origin + url;
+  }
+
+  let nav;
+  try {
+    nav = await c.send('Page.navigate', { url });
+  } catch (e) {
+    return { error: '导航失败：' + (e && e.message || String(e)), requested: url };
+  }
+  if (nav.errorText) return { error: nav.errorText, requested: url };
+
+  const timeout = Math.min(args.timeoutMs || 12000, 60000);
+  const until = Date.now() + timeout;
+  let last = null;
+  while (Date.now() < until) {
+    await sleep(200);
+    try {
+      const r = await c.send('Runtime.evaluate', {
+        expression: '({ href: location.href, ready: document.readyState, title: document.title })',
+        returnByValue: true
+      });
+      last = r.result && r.result.value;
+      if (last && last.ready === 'complete') break;
+    } catch (e) { /* 导航过程中执行上下文会短暂失效 */ }
+  }
+
+  if (args.settleMs !== 0) await sleep(args.settleMs || 400);
+
+  return {
+    ok: true,
+    requested: url,
+    final: last && last.href,
+    title: last && last.title,
+    readyState: last && last.ready
+  };
+}
+
 // ---- 请求 mock / 改响应
 async function netMock(args = {}) {
   const c = await ensure();
@@ -1331,6 +1378,20 @@ const TOOLS = [
     }
   },
   {
+    name: 'navigate',
+    description: '打开某个地址：支持站内路径（如 /add）或完整 URL。会等页面 readyState 到 complete，再留一小段渲染时间。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '站内路径（/add）或完整 URL' },
+        timeoutMs: { type: 'number', description: '最长等待，默认 12000' },
+        settleMs: { type: 'number', description: 'readyState 完成后额外等待，默认 400' }
+      },
+      required: ['url'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'resize',
     description: '改视口尺寸（模拟手机/平板/桌面），可选重载，并顺带体检横向溢出和过小的点按目标。恢复默认用 reset。',
     inputSchema: {
@@ -1420,6 +1481,7 @@ const IMPL = {
   css_coverage: cssCoverage,
   emulate_media: emulateMedia,
   screenshot: screenshot,
+  navigate: navigate,
   resize: resize,
   net_mock: netMock,
   debugger_ctl: debuggerCtl,

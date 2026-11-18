@@ -71,6 +71,12 @@ CDP 是 DOM、网络体、console 唯一交汇的地方。但 AI 连不上调试
 
 > CDP 看不到 attach 之前的请求。要完整首屏，必须 `reload`。
 
+#### `navigate`
+```json
+{ "url": "/add", "settleMs": 400 }
+```
+支持站内路径或完整 URL，等到 `readyState === 'complete'`，再留 `settleMs` 给应用渲染。返回最终 URL 与标题。Chrome 拒绝该 URL 时返回 `{ error }` 而不是抛异常。
+
 ### Elements
 
 #### `page_overview`
@@ -275,11 +281,11 @@ node run-tests.mjs service      # 只跑某个套件
 | 套件 | 条数 | 覆盖 |
 | --- | --- | --- |
 | `transport`（`test-client.mjs`） | 44 | 握手、200/404/500、POST 体、大 body 落盘、console 各级别、多标签切换、`element_style` |
-| `capabilities`（`capabilities-test.mjs`） | 25 | 十项扩展工具的正常路径 + 副作用 |
+| `capabilities`（`capabilities-test.mjs`） | 28 | 十项扩展工具的正常路径 + 副作用 |
 | `service`（`suite-service.mjs`） | 43 | 协议错误、每个工具的错误路径、生命周期 |
 | `concurrency`（`concurrency-test.mjs`） | 各 3 | 只建一条 CDP 连接，事件不重复 |
 
-**全部套件合计 118 / 118。**
+**全部套件合计 121 / 121。**
 
 写 `suite-service.mjs` 时立刻抓出两个被旧套件掩盖的真 bug：
 

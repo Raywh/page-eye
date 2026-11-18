@@ -71,6 +71,12 @@ Pins the session to a tab. Switching clears the capture buffers.
 
 > CDP cannot see requests made before attach. If you need the complete first load, always `reload`.
 
+#### `navigate`
+```json
+{ "url": "/add", "settleMs": 400 }
+```
+Accepts an in-site path or an absolute URL, waits for `readyState === 'complete'`, then waits `settleMs` more for the app to render. Returns the final URL and title. If Chrome refuses the URL it returns `{ error }` instead of throwing.
+
 ### Elements
 
 #### `page_overview`
@@ -275,11 +281,11 @@ The runner starts the fixture server and a **fresh Chrome per suite**, so suites
 | Suite | Checks | Covers |
 | --- | --- | --- |
 | `transport` (`test-client.mjs`) | 44 | handshake, 200/404/500, POST body, body spill, console levels, tab switching, `element_style` |
-| `capabilities` (`capabilities-test.mjs`) | 25 | the ten extended tools, happy path + side effects |
+| `capabilities` (`capabilities-test.mjs`) | 28 | the ten extended tools, happy path + side effects |
 | `service` (`suite-service.mjs`) | 43 | protocol errors, every tool's error path, lifecycle |
 | `concurrency` (`concurrency-test.mjs`) | 3 × 2 | one CDP connection, no duplicate events |
 
-**118 / 118 across all suites.**
+**121 / 121 across all suites.**
 
 Writing `suite-service.mjs` immediately found two real bugs that the earlier suites had hidden:
 

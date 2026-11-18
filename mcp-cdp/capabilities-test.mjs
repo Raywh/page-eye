@@ -38,9 +38,9 @@ proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initial
 
 // 0. 工具清单
 const list = await rpc('tools/list', {});
-record('工具总数为 20', list.tools.length === 20, list.tools.length);
+record('工具总数为 21', list.tools.length === 21, list.tools.length);
 const names = list.tools.map(t => t.name);
-['net_conditions', 'a11y_tree', 'css_coverage', 'emulate_media', 'screenshot', 'net_mock', 'debugger_ctl', 'highlight', 'perf_metrics', 'frames', 'resize']
+['net_conditions', 'a11y_tree', 'css_coverage', 'emulate_media', 'screenshot', 'net_mock', 'debugger_ctl', 'highlight', 'perf_metrics', 'frames', 'resize', 'navigate']
   .forEach(n => record('新工具已注册: ' + n, names.includes(n), null));
 
 // 1. 网络条件
@@ -145,6 +145,23 @@ await step('resize reset 恢复默认视口', async () => {
   const v = await call('run_js', { expression: 'innerWidth' });
   if (!(v.value > 1000)) throw new Error('恢复后宽度 ' + v.value);
   return '恢复为 ' + v.value + 'px';
+});
+
+// 12. 导航
+await step('navigate 能打开站内路径并回来', async () => {
+  const a = await call('navigate', { url: '/', settleMs: 300 });
+  if (!a.ok || !String(a.final || '').endsWith('/')) throw new Error('首页导航失败: ' + JSON.stringify(a));
+  const b = await call('navigate', { url: '/api/items' });
+  if (!b.ok) throw new Error('站内路径导航失败: ' + JSON.stringify(b));
+  await call('navigate', { url: '/', settleMs: 600 });
+  return '跳到 /api/items 再回首页，标题 ' + (await call('run_js', { expression: 'document.title' })).value;
+});
+
+await step('navigate 非法 URL 返回 error 不崩', async () => {
+  const r = await call('navigate', { url: 'http://127.0.0.1:1/' });
+  if (!r.error && r.ok) throw new Error('竟然成功了');
+  await call('navigate', { url: '/', settleMs: 600 });
+  return r.error ? 'error: ' + String(r.error).slice(0, 60) : '已回到首页';
 });
 
 await sleep(200);
