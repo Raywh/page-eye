@@ -94,16 +94,30 @@ class CDP {
   close() { try { this.ws.close(); } catch {} }
 
   send(method, params = {}) {
+    if (!this.alive()) return Promise.reject(new Error('CDP 连接已断开: ' + method));
     const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params }));
     return new Promise((res, rej) => {
-      this.pending.set(id, { res, rej });
-      setTimeout(() => {
+      // 定时器必须在成功/失败时清掉，否则每个请求都留一个 15s 的空定时器
+      const timer = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
           rej(new Error('CDP 超时: ' + method));
         }
       }, 15000);
+      if (timer.unref) timer.unref();
+
+      this.pending.set(id, {
+        res: v => { clearTimeout(timer); res(v); },
+        rej: e => { clearTimeout(timer); rej(e); }
+      });
+
+      try {
+        this.ws.send(JSON.stringify({ id, method, params }));
+      } catch (e) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        rej(e);
+      }
     });
   }
 
@@ -144,7 +158,7 @@ function pickTarget(list) {
   return list.find(t => !isBoring(t)) || list[0];
 }
 
-async function ensure() {
+async function connectNow() {
   const list = await listPageTargets();
   if (!list.length) {
     throw new Error('没有可调试的页面。Chrome 需要用 --remote-debugging-port 启动，并至少开一个标签。');
@@ -161,16 +175,42 @@ async function ensure() {
   if (switching) reset();
 
   const c = await CDP.connectTo(target);
-  await c.send('Network.enable', { maxTotalBufferSize: 100 * 1024 * 1024 });
-  await c.send('Runtime.enable');
-  await c.send('Page.enable');
-  await c.send('Log.enable');
+  try {
+    await c.send('Network.enable', { maxTotalBufferSize: 100 * 1024 * 1024 });
+    await c.send('Runtime.enable');
+    await c.send('Page.enable');
+    await c.send('Log.enable');
+  } catch (e) {
+    c.close();          // 半连接不能留着，否则它照样往共享缓冲里写事件
+    throw e;
+  }
   install(c);
 
   currentConn = c;
   currentTargetId = target.id;
   log('已连接', target.title || '(无标题)', '→', target.url);
   return c;
+}
+
+// 单飞：并发调用共享同一次建连。
+// 少了这层，N 个并发工具调用会各自越过 currentConn 判断、各建一条 CDP WebSocket，
+// 那条被丢弃的连接仍在收事件，于是同一份 console/网络被记录 N 遍。
+let ensurePromise = null;
+
+function ensure() {
+  if (ensurePromise) return ensurePromise;
+  ensurePromise = connectNow().finally(() => { ensurePromise = null; });
+  return ensurePromise;
+}
+
+// 工具调用串行化：采集缓冲、currentConn、target 都是共享状态，
+// 并发执行会让 recorder/use_target 这类会改状态的调用和读操作互相穿插。
+let toolChain = Promise.resolve();
+
+function serialize(fn) {
+  const run = toolChain.then(fn);
+  toolChain = run.then(() => {}, () => {});
+  return run;
 }
 
 async function listTargets() {
@@ -845,7 +885,7 @@ async function handle(msg) {
       return;
     }
     try {
-      const out = await fn(params.arguments || {});
+      const out = await serialize(() => fn(params.arguments || {}));
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] } });
     } catch (e) {
       log('tool error', name, e.message);
@@ -870,4 +910,25 @@ rl.on('line', line => {
   try { msg = JSON.parse(t); } catch { log('bad json'); return; }
   handle(msg).catch(e => log('handle error', e.message));
 });
+
+// ---------------------------------------------------------------- 生命周期
+function cleanup() {
+  try { if (currentConn) currentConn.close(); } catch {}
+}
+
+// 宿主关 stdio / 发信号时收尾，别在浏览器里留一条孤儿 CDP 会话
+rl.on('close', () => { cleanup(); process.exit(0); });
+process.on('SIGINT', () => { cleanup(); process.exit(0); });
+process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+
+// 真崩溃必须留下痕迹，否则日志里和「被宿主 kill 掉」分不出来
+process.on('unhandledRejection', e => {
+  log('unhandledRejection:', (e && e.stack) || e);
+});
+process.on('uncaughtException', e => {
+  log('uncaughtException:', (e && e.stack) || e);
+  cleanup();
+  process.exit(1);
+});
+
 log('ready, endpoint =', ENDPOINT);
