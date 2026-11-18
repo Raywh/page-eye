@@ -118,6 +118,32 @@ trae-style-snapshot/  浏览器脚本：把渲染后的样式压成一段 AI 能
 | `use_target` | 按 index / id / URL 片段切换标签 |
 | `recorder` | `status` 看缓冲、`clear` 清空、`reload` 从头录 |
 
+## 和其他浏览器 MCP 的区别
+
+| | **page-eye** | **chrome-devtools-mcp** | **chrome-inspector-mcp** |
+| --- | --- | --- | --- |
+| 维护方 | 本仓库 | Google / ChromeDevTools | 社区（devtoolcss） |
+| 工具数 | 19 | 63（若干分类需额外 flag 才开） | 6 |
+| 安装 | 克隆后 `node server.mjs` | `npx -y chrome-devtools-mcp@latest` | npx + 装一个 Chrome 扩展 |
+| 依赖 | 无 | Puppeteer、npm、Node LTS | Chrome 扩展 |
+| 遥测 | 无 | 默认上报使用统计；trace 可能发往 CrUX | 无 |
+| 输入自动化 | 只有 `run_js` | 完整：click / fill / drag / hover / press_key / wait_for | — |
+| CSS | 选择器 → 计算值 **+ 来自哪个 CSS 变量**，自动去重变体 | uid → 匹配规则（标 `[overloaded]`）、级联层、`var()` 解析值 | 匹配规则、computed style |
+| 网络 | 列表 → 详情，大 body 落盘，条件模拟 + mock | 列表 → 详情，条件模拟 + mock | — |
+| 性能 | 只有指标 | trace + insights + CrUX 实测数据 + Lighthouse | — |
+| 内存 | — | 14 个堆快照工具 | — |
+| 文档 | 中英双版 | 英文 | 英文 |
+
+**一句话：`chrome-devtools-mcp` 更大、更官方、能力更全。除非下面三条正好是你的痛点，否则优先用它。**
+
+这个仓库优化的是：
+
+1. **什么都不用装**：一个文件、`node server.mjs`。没有 npm、没有 Puppeteer 下载、不会版本漂移，也没有需要记住的遥测开关。
+2. **把「上下文预算」当设计目标，而不是事后补救**：变体去重带 `count`、尺寸差异用 `sizeRange` 而不是拆成两款、大 body 落盘、`pagePerf` 明确标注只作参考。难点从来不是「能不能读到」，而是「该让多少进对话」。
+3. **「这个像素是哪个变量给的」**：`element_style` 一次就能答 `vars: { bg: ["--card"] }`。`get_css_styles` 答的是更深一层——**为什么**（哪条规则赢了、谁被覆盖了）。两个不同的问题，两种工具。
+
+两者不互斥：调试端口同时接受多个 CDP 客户端（本仓库的并发测试就同时持有 5 条以上连接到同一页面），可以都指向同一个 Chrome。
+
 ## 为什么是这个形状
 
 难点从来不是「能不能读到」，而是**什么该进上下文**。

@@ -118,6 +118,32 @@ The surface mirrors what you would do by hand in DevTools.
 | `use_target` | Switch to another tab by index / id / URL fragment |
 | `recorder` | `status`, `clear` the buffers, or `reload` and record from zero |
 
+## How it compares
+
+| | **page-eye** | **chrome-devtools-mcp** | **chrome-inspector-mcp** |
+| --- | --- | --- | --- |
+| Maintainer | this repo | Google / ChromeDevTools | community (devtoolcss) |
+| Tools | 19 | 63 (several categories behind flags) | 6 |
+| Install | clone, `node server.mjs` | `npx -y chrome-devtools-mcp@latest` | npx + a Chrome extension |
+| Dependencies | none | Puppeteer, npm, Node LTS | Chrome extension |
+| Telemetry | none | usage stats on by default; traces may be sent to CrUX | none |
+| Input automation | `run_js` only | full: click / fill / drag / hover / press_key / wait_for | — |
+| CSS | selector → computed values **+ which CSS variable**, variants deduped | uid → matched rules with `[overloaded]`, cascade layers, resolved `var()` values | matched rules, computed style |
+| Network | list → get, bodies spill to disk, conditions + mocks | list → get, conditions + mocks | — |
+| Performance | metrics only | traces + insights + CrUX field data + Lighthouse | — |
+| Memory | — | 14 heap-snapshot tools | — |
+| Docs | English + 中文 | English | English |
+
+**The short version: `chrome-devtools-mcp` is the bigger, official, more capable tool. Reach for it unless one of the three points below is what you need.**
+
+What this repo optimises for:
+
+1. **Nothing to install.** One file, `node server.mjs`. No npm, no Puppeteer download, no version drift, no telemetry flags to remember.
+2. **Context discipline as the design goal, not an afterthought.** Variant dedupe with `count`, `sizeRange` instead of splitting, bodies to disk, `pagePerf` explicitly labelled as advisory. The question was never "can we read it" but "how much of it should enter the conversation".
+3. **"Which variable produced this pixel?"** `element_style` answers with `vars: { bg: ["--card"] }` in one shot. `get_css_styles` answers the deeper question — *why*, i.e. which rule won and what got overridden. Different questions, different tools.
+
+They are not mutually exclusive: the remote debugging port accepts several CDP clients at once (this repo's concurrency test holds 5+ simultaneous sockets to one page), so both can point at the same Chrome.
+
 ## Why this shape
 
 The hard part was never "can we read it". It is **what should enter the context**.

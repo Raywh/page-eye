@@ -213,6 +213,12 @@ Enables the Fetch domain and fulfils matching requests. Everything unmatched is 
 #### `perf_metrics`
 No parameters. Layout / style recalc counts and durations, script and task time, JS heap, node count.
 
+## Compared to other browser MCP servers
+
+`chrome-devtools-mcp` — official, 63 tools, Puppeteer input automation, performance traces, 14 heap-snapshot tools — is the bigger and more capable option. Use it when you need browser automation or performance analysis.
+
+This server's niche: **zero dependencies, context discipline, and CSS-variable provenance**. Full comparison table in the [root README](../README.md).
+
 ## Pitfalls this server already handles
 
 | Pitfall | Handling |
