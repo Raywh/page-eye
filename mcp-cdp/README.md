@@ -140,6 +140,8 @@ Returns rendered styles for up to `max` **variants** (identical styles are merge
 
 Variable provenance is computed by normalising every `--*` value through a hidden probe element, so `#2563eb`, `rgb(37,99,235)` and a differently ordered `box-shadow` all match. The probe is removed afterwards.
 
+The snapshot script is injected **once per document** and kept under `window.__pe`; any page globals it would otherwise shadow (`snap`, `page`, `pick`, …) are restored immediately. A new document (navigation) triggers a fresh injection.
+
 #### `a11y_tree`
 ```json
 { "roles": "heading,link,button", "limit": 40 }
@@ -272,6 +274,16 @@ No parameters. Layout / style recalc counts and durations, script and task time,
 
 This server's niche: **zero dependencies, context discipline, and CSS-variable provenance**. Full comparison table in the [root README](../README.md).
 
+## Cancellation
+
+Long-running tools (`navigate`, `interact` with `scroll`) check a cancel flag between steps, so a client-side timeout can actually free the queue:
+
+```json
+{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}
+```
+
+The call returns an error mentioning 取消 and the serialized queue moves on. A single in-flight CDP command cannot be interrupted — only the polling loops around it.
+
 ## Pitfalls this server already handles
 
 | Pitfall | Handling |
@@ -320,11 +332,11 @@ The runner starts the fixture server and a **fresh Chrome per suite**, so suites
 | Suite | Checks | Covers |
 | --- | --- | --- |
 | `transport` (`test-client.mjs`) | 44 | handshake, 200/404/500, POST body, body spill, console levels, tab switching, `element_style` |
-| `capabilities` (`capabilities-test.mjs`) | 37 | the ten extended tools, happy path + side effects |
+| `capabilities` (`capabilities-test.mjs`) | 38 | the ten extended tools, happy path + side effects |
 | `service` (`suite-service.mjs`) | 46 | protocol errors, every tool's error path, lifecycle |
 | `concurrency` (`concurrency-test.mjs`) | 4 × 2 | one CDP connection, no duplicate events |
 
-**135 / 135 across all suites.**
+**136 / 136 across all suites.**
 
 Writing `suite-service.mjs` immediately found two real bugs that the earlier suites had hidden:
 

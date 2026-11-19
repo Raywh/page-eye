@@ -199,7 +199,7 @@ async function connectNow() {
 
   const c = await CDP.connectTo(target);
   try {
-    await c.send('Network.enable', { maxTotalBufferSize: 100 * 1024 * 1024 });
+    await c.send('Network.enable', { maxTotalBufferSize: 20 * 1024 * 1024 });
     await c.send('Runtime.enable');
     await c.send('Page.enable');
     await c.send('Log.enable');
@@ -225,6 +225,18 @@ function ensure() {
   if (ensurePromise) return ensurePromise;
   ensurePromise = connectNow().finally(() => { ensurePromise = null; });
   return ensurePromise;
+}
+
+// MCP 的 notifications/cancelled：长任务（navigate 轮询、scroll 循环）要能提前退出
+let inflight = { id: null, cancelled: false };
+
+function cancelInflight(requestId) {
+  if (requestId === undefined || requestId === null) return;
+  if (inflight.id !== null && String(inflight.id) === String(requestId)) inflight.cancelled = true;
+}
+
+function assertNotCancelled() {
+  if (inflight.cancelled) throw new Error('调用已取消');
 }
 
 // 工具调用串行化：采集缓冲、currentConn、target 都是共享状态，
@@ -660,10 +672,26 @@ async function elementStyle(args = {}) {
   const max = Math.min(args.max || 6, 20);
   const c = await ensure();
 
-  // 一次 evaluate 搞定：注入脚本 + 解析选择器 + 取样式
-  const expr = SNAPSHOT_SRC + `
+  // 一次 evaluate 搞定：首次注入脚本 + 解析选择器 + 取样式。
+  // 注入用 __pe 命名空间隔离，并恢复页面原有的同名全局（snap/page/pick 这些太容易撞），
+  // 每个 document 只注入一次，靠 __pe.doc 判断是否同一个文档。
+  const expr = `
 ;(function(){
   var raw = ${JSON.stringify(raw)};
+  var KEYS = ['snap', 'snapAll', 'page', 'tokens', 'pick'];
+  if (!window.__pe || window.__pe.doc !== document) {
+    var saved = {}, had = {};
+    KEYS.forEach(function (k) {
+      had[k] = Object.prototype.hasOwnProperty.call(window, k);
+      saved[k] = window[k];
+    });
+    ${SNAPSHOT_SRC}
+    window.__pe = { doc: document, snapAll: window.snapAll };
+    KEYS.forEach(function (k) {
+      if (had[k]) { window[k] = saved[k]; }
+      else { try { delete window[k]; } catch (e) { window[k] = undefined; } }
+    });
+  }
   var tries = [raw, '#' + raw, '.' + raw];
   var used = null, els = null;
   for (var i = 0; i < tries.length; i++) {
@@ -673,7 +701,7 @@ async function elementStyle(args = {}) {
     } catch (err) {}
   }
   if (!els) return { error: '没有匹配到元素：' + raw };
-  var r = window.snapAll(used, { max: ${max} });
+  var r = window.__pe.snapAll(used, { max: ${max} });
   return { selectorInput: raw, selectorUsed: used, matched: els.length, snap: r };
 })()`;
 
@@ -1089,6 +1117,7 @@ async function pollReady(c, timeoutMs) {
   const until = Date.now() + timeoutMs;
   let last = null;
   while (Date.now() < until) {
+    assertNotCancelled();
     await sleep(150);
     try {
       const r = await c.send('Runtime.evaluate', {
@@ -1213,6 +1242,7 @@ async function doScroll(c, args) {
   let lastH = h0, stagnant = 0, done = 0;
 
   for (let i = 0; i < steps; i++) {
+    assertNotCancelled();
     done++;
     await evalValue(c, 'window.scrollBy(0, Math.max(200, Math.round(innerHeight * 0.9))); 1');
     await sleep(wait);
@@ -1838,6 +1868,10 @@ async function handle(msg) {
     return;
   }
   if (method === 'notifications/initialized' || method === 'initialized') return;
+  if (method === 'notifications/cancelled') {
+    cancelInflight(params && params.requestId);
+    return;
+  }
   if (method === 'ping') { send({ jsonrpc: '2.0', id, result: {} }); return; }
   if (method === 'tools/list') { send({ jsonrpc: '2.0', id, result: { tools: TOOLS } }); return; }
 
@@ -1856,7 +1890,11 @@ async function handle(msg) {
         pausedState = null;
         log('页面处于暂停态，已自动恢复以免阻塞');
       }
-      const out = await serialize(() => fn(params.arguments || {}));
+      const out = await serialize(() => {
+        inflight = { id: id === undefined ? null : id, cancelled: false };
+        return fn(params.arguments || {});
+      });
+      inflight = { id: null, cancelled: false };
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] } });
     } catch (e) {
       log('tool error', name, e.message);

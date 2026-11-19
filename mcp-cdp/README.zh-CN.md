@@ -140,6 +140,8 @@ CDP 是 DOM、网络体、console 唯一交汇的地方。但 AI 连不上调试
 
 变量溯源的做法是把每个 `--*` 值丢进隐藏探针规范化，所以 `#2563eb`、`rgb(37,99,235)`、以及书写顺序不同的 `box-shadow` 都能对上。探针用完即删。
 
+快照脚本**每个文档只注入一次**，挂在 `window.__pe` 下；它本来会覆盖的页面全局（`snap`、`page`、`pick` 等）会立刻还原。导航到新文档时会重新注入。
+
 #### `a11y_tree`
 ```json
 { "roles": "heading,link,button", "limit": 40 }
@@ -272,6 +274,16 @@ Chrome 的判据是「这条规则匹配到了至少一个元素」——所以�
 
 本 server 的定位：**零依赖、上下文纪律、CSS 变量溯源**。完整对比表在[根 README](../README.zh-CN.md)。
 
+## 取消
+
+长任务（`navigate`、`interact` 的 `scroll`）在每一步之间检查取消标记，所以客户端超时后队列能真的腾出来：
+
+```json
+{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}
+```
+
+该调用会返回一个提到「取消」的错误，串行队列继续往下走。**单条在途的 CDP 命令无法中断**，能打断的只是它外面的轮询循环。
+
 ## 已经处理掉的坑
 
 | 坑 | 处理 |
@@ -320,11 +332,11 @@ node run-tests.mjs service      # 只跑某个套件
 | 套件 | 条数 | 覆盖 |
 | --- | --- | --- |
 | `transport`（`test-client.mjs`） | 44 | 握手、200/404/500、POST 体、大 body 落盘、console 各级别、多标签切换、`element_style` |
-| `capabilities`（`capabilities-test.mjs`） | 37 | 十项扩展工具的正常路径 + 副作用 |
+| `capabilities`（`capabilities-test.mjs`） | 38 | 十项扩展工具的正常路径 + 副作用 |
 | `service`（`suite-service.mjs`） | 46 | 协议错误、每个工具的错误路径、生命周期 |
 | `concurrency`（`concurrency-test.mjs`） | 各 4 | 只建一条 CDP 连接，事件不重复 |
 
-**全部套件合计 135 / 135。**
+**全部套件合计 136 / 136。**
 
 写 `suite-service.mjs` 时立刻抓出两个被旧套件掩盖的真 bug：
 

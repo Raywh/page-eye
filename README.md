@@ -184,11 +184,11 @@ node mcp-cdp/run-tests.mjs service      # a single suite
 | Suite | Checks | Covers |
 | --- | --- | --- |
 | `transport` | 44 | MCP handshake, real 200/404/500, POST body, body spill to disk, console levels, uncaught exceptions, tab switching, `element_style` |
-| `capabilities` | 37 | All ten extended tools, happy path with side-effect assertions |
+| `capabilities` | 38 | All ten extended tools, happy path with side-effect assertions |
 | `service` | 46 | Protocol layer (unknown method, malformed JSON, missing arguments), every tool's error path, concurrency, process lifecycle |
 | `concurrency-5` / `-12` | 4 each | Parallel calls open exactly one CDP connection and record each event once |
 
-**135 / 135, three consecutive full runs.**
+**136 / 136, three consecutive full runs.**
 
 `trae-style-snapshot` keeps its own suites: **51** assertions, **12** edge inputs with no exceptions, plus a 4809-node stress run.
 

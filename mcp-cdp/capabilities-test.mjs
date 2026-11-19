@@ -25,6 +25,27 @@ async function call(name, args = {}) {
   return JSON.parse(t);
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// 发起一个不求值立刻返回的调用，用于测试取消
+function callAsync(name, args = {}) {
+  const id = ++idc;
+  proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }) + '\n');
+  const raw = new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error('timeout ' + name)); } }, 40000);
+  });
+  return {
+    id,
+    done: raw.then(r => {
+      const t = (r.content || []).map(c => c.text).join('');
+      if (r.isError) return { __err: t };
+      try { return JSON.parse(t); } catch { return t; }
+    })
+  };
+}
+function cancel(requestId) {
+  proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId } }) + '\n');
+}
 // 读 PNG 的 IHDR 尺寸，用来验证 fullPage 是否真的截了整页
 function readPngSize(file) {
   try {
@@ -260,6 +281,21 @@ await step('interact 点击导航链接不崩', async () => {
   if (now.value !== '/api/items') throw new Error('没有导航到 /api/items，实际 ' + now.value);
   await call('navigate', { url: '/', settleMs: 600 });
   return '导航到 ' + now.value + '，changed=' + (r.changed ? '有' : '无（已说明原因）');
+});
+
+// 17. 取消：长任务要能被 notifications/cancelled 打断
+await step('navigate 能被取消', async () => {
+  const started = Date.now();
+  const { id, done } = callAsync('navigate', { url: '/api/slow', timeoutMs: 20000 });
+  await sleep(250);
+  cancel(id);
+  const r = await done.catch(e => ({ __err: String(e) }));
+  const waited = Date.now() - started;
+  if (!(r && (r.__err || r.error))) throw new Error('取消后仍返回成功: ' + JSON.stringify(r));
+  if (r.__err && !/取消/.test(r.__err)) throw new Error('返回的不是取消错误: ' + r.__err);
+  if (waited > 4000) throw new Error('取消后仍等了 ' + waited + 'ms');
+  await call('navigate', { url: '/', settleMs: 600 });
+  return `取消在 ${waited}ms 内生效`;
 });
 
 await sleep(200);
