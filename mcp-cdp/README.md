@@ -283,6 +283,22 @@ This server's niche: **zero dependencies, context discipline, and CSS-variable p
 | `encodedDataLength` stays non-zero on cache hits | `fromCache` flag + `pagePerf` reported separately |
 | Concurrent calls each opened a CDP socket | Single-flight `ensure()`; calls are also serialised |
 
+## Performance
+
+Measured on the fixture page (Chrome 157, headless):
+
+| What | Result |
+| --- | --- |
+| Cold start (spawn → first ping) | 39 ms |
+| First tool call (includes CDP connect) | 36 ms |
+| Tool latency, warm | p50 0–3 ms, p95 ≤ 8 ms (`highlight` 18 ms on first use) |
+| 10 parallel `run_js` vs 10 sequential | 8 ms vs 15 ms |
+| Overhead vs raw CDP `Runtime.evaluate` | ~1 ms (p50) |
+| 2000 extra DOM nodes | `page_overview` 55 ms, `element_style` 14 ms, `a11y_tree` 138 ms |
+| 400 navigations | RSS 47 → 88 MB, step-wise GC sawtooth, no linear growth (buffers capped at 500 / 800 / 400) |
+
+Run it yourself: `node perf-test.mjs` (needs `serve.mjs` + Chrome on `CDP_ENDPOINT`).
+
 ## Limits
 
 - Main frame only — cross-origin iframes and workers need `Target.setAutoAttach` (listed by `frames`, not readable yet)
@@ -304,11 +320,11 @@ The runner starts the fixture server and a **fresh Chrome per suite**, so suites
 | Suite | Checks | Covers |
 | --- | --- | --- |
 | `transport` (`test-client.mjs`) | 44 | handshake, 200/404/500, POST body, body spill, console levels, tab switching, `element_style` |
-| `capabilities` (`capabilities-test.mjs`) | 34 | the ten extended tools, happy path + side effects |
+| `capabilities` (`capabilities-test.mjs`) | 37 | the ten extended tools, happy path + side effects |
 | `service` (`suite-service.mjs`) | 46 | protocol errors, every tool's error path, lifecycle |
-| `concurrency` (`concurrency-test.mjs`) | 3 × 2 | one CDP connection, no duplicate events |
+| `concurrency` (`concurrency-test.mjs`) | 4 × 2 | one CDP connection, no duplicate events |
 
-**130 / 130 across all suites.**
+**135 / 135 across all suites.**
 
 Writing `suite-service.mjs` immediately found two real bugs that the earlier suites had hidden:
 

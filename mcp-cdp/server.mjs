@@ -36,22 +36,39 @@ const state = {
   requests: new Map(),   // requestId -> record
   order: [],             // requestId 顺序
   logs: [],              // {ts, level, source, text}
-  skipped: 0
+  skipped: 0,
+  requestSeq: 0,         // 单调递增，缓冲淘汰后仍能算差
+  logSeq: 0
 };
 
 function pushRequest(rec) {
   state.requests.set(rec.requestId, rec);
   state.order.push(rec.requestId);
+  state.requestSeq++;
   while (state.order.length > MAX_REQUESTS) {
     const old = state.order.shift();
     state.requests.delete(old);
+    state.skipped++;
   }
   return rec;
 }
 
 function pushLog(entry) {
   state.logs.push(entry);
+  state.logSeq++;
   while (state.logs.length > MAX_LOGS) state.logs.shift();
+}
+
+// 切标签后连接换了，所有「属于上一条会话」的设置都要清掉，
+// 否则 netState / viewportState / mocks 会宣称仍然生效但实际没作用。
+function resetSession() {
+  lastGoodOrigin = null;
+  Object.assign(netState, { latency: 0, downloadKbps: 0, uploadKbps: 0, offline: false, cacheDisabled: false });
+  viewportState.active = false;
+  mocks.length = 0;
+  pausedState = null;
+  sheetUrls.clear();
+  if (currentConn) { currentConn.send('Fetch.disable').catch(() => {}); }
 }
 
 function reset() {
@@ -59,6 +76,8 @@ function reset() {
   state.order.length = 0;
   state.logs.length = 0;
   state.skipped = 0;
+  state.requestSeq = 0;
+  state.logSeq = 0;
 }
 
 // ------------------------------------------------------------------ CDP
@@ -91,7 +110,11 @@ class CDP {
     return new CDP(ws);
   }
 
-  close() { try { this.ws.close(); } catch {} }
+  close() {
+    try { this.ws.close(); } catch {}
+    for (const [, p] of this.pending) { try { p.rej(new Error('CDP 连接已关闭')); } catch {} }
+    this.pending.clear();
+  }
 
   send(method, params = {}) {
     if (!this.alive()) return Promise.reject(new Error('CDP 连接已断开: ' + method));
@@ -172,7 +195,7 @@ async function connectNow() {
   if (currentConn) currentConn.close();
   currentConn = null;
   currentTargetId = null;
-  if (switching) reset();
+  if (switching) { reset(); resetSession(); }
 
   const c = await CDP.connectTo(target);
   try {
@@ -243,6 +266,7 @@ async function useTarget(args = {}) {
   pinnedTargetId = hit.id;
   currentTargetId = null;   // 强制下次 ensure 重连
   reset();
+  resetSession();
   await ensure();
   return { ok: true, selected: { id: hit.id, title: hit.title, url: hit.url }, note: '之后所有工具都作用于这个标签，直到它关闭或用 use_target 改' };
 }
@@ -266,6 +290,18 @@ function formatArg(a) {
 
 function install(c) {
   c.on('Network.requestWillBeSent', p => {
+    const existing = state.requests.get(p.requestId);
+    if (existing) {   // 重定向：同一 requestId 再来一次，就地更新，别重复入队
+      existing.url = p.request.url;
+      existing.method = p.request.method;
+      existing.reqHeaders = p.request.headers;
+      existing.status = undefined;
+      existing.mimeType = undefined;
+      existing.size = undefined;
+      existing.failed = false;
+      existing.redirected = true;
+      return;
+    }
     const rec = pushRequest({
       requestId: p.requestId,
       method: p.request.method,
@@ -738,15 +774,24 @@ const mocks = [];              // { re, status, body, headers }
 let pauseWaiters = [];
 
 function hexToRgb(hex) {
-  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || ''));
-  if (!m) return { r: 0, g: 179, b: 255 };
-  return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
+  const s = String(hex || '').trim();
+  let m = /^#?([0-9a-f]{6})$/i.exec(s);
+  if (m) { const v = parseInt(m[1], 16); return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 }; }
+  m = /^#?([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(s);
+  if (m) return { r: parseInt(m[1] + m[1], 16), g: parseInt(m[2] + m[2], 16), b: parseInt(m[3] + m[3], 16) };
+  return { r: 0, g: 179, b: 255 };
 }
 
 function installExtra(c) {
   c.on('CSS.styleSheetAdded', p => {
     const h = p.header || {};
-    if (h.styleSheetId) sheetUrls.set(h.styleSheetId, h.sourceURL || h.origin || '(inline)');
+    if (!h.styleSheetId) return;
+    sheetUrls.set(h.styleSheetId, h.sourceURL || h.origin || '(inline)');
+    // 每次导航都会产生新的 styleSheetId，不设上限会无限增长
+    if (sheetUrls.size > 400) {
+      const oldest = sheetUrls.keys().next().value;
+      sheetUrls.delete(oldest);
+    }
   });
 
   c.on('Fetch.requestPaused', async p => {
@@ -766,8 +811,15 @@ function installExtra(c) {
   });
 
   c.on('Debugger.paused', p => {
+    pausedState = p;
     const w = pauseWaiters; pauseWaiters = [];
     w.forEach(fn => { try { fn(p); } catch {} });
+  });
+
+  c.on('Page.frameNavigated', p => {
+    if (navWaiter && p.frame && !p.frame.parentId) {
+      const w = navWaiter; navWaiter = null; w(p.frame);
+    }
   });
 }
 
@@ -920,6 +972,20 @@ async function screenshot(args = {}) {
     opts.clip = { ...clip, scale: 1 };
     opts.captureBeyondViewport = true;
   } else if (args.fullPage) {
+    // 设备模拟开着时 Page.getLayoutMetrics 的 contentSize 会被裁到视口高度，
+    // 直接问页面本身的滚动尺寸更可靠。
+    const size = await evalValue(c, `({
+      w: Math.max(document.documentElement.clientWidth, window.innerWidth),
+      h: Math.max(
+        document.documentElement.scrollHeight,
+        document.body ? document.body.scrollHeight : 0,
+        window.innerHeight
+      )
+    })`);
+    if (size && size.w && size.h) {
+      clip = { x: 0, y: 0, width: Math.ceil(size.w), height: Math.ceil(size.h), scale: 1 };
+      opts.clip = clip;
+    }
     opts.captureBeyondViewport = true;
   }
   const shot = await c.send('Page.captureScreenshot', opts);
@@ -1007,6 +1073,8 @@ async function resize(args = {}) {
 
 // ---- 导航
 let lastGoodOrigin = null;
+let navWaiter = null;          // 等主 frame 提交
+let pausedState = null;        // 最近一次 Debugger.paused
 
 async function currentOrigin(c) {
   try {
@@ -1015,6 +1083,23 @@ async function currentOrigin(c) {
     if (v && /^https?:\/\//.test(v)) return v;
   } catch (e) { /* 错误页 / 上下文失效 */ }
   return lastGoodOrigin;   // 回落到上一次成功的 origin，便于从错误页恢复
+}
+
+async function pollReady(c, timeoutMs) {
+  const until = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < until) {
+    await sleep(150);
+    try {
+      const r = await c.send('Runtime.evaluate', {
+        expression: '({ href: location.href, ready: document.readyState, title: document.title })',
+        returnByValue: true
+      });
+      last = r.result && r.result.value;
+      if (last && last.ready === 'complete') return last;
+    } catch (e) { /* 提交瞬间上下文会失效 */ }
+  }
+  return last;
 }
 
 async function navigate(args = {}) {
@@ -1033,42 +1118,53 @@ async function navigate(args = {}) {
     url = origin + url;
   }
 
+  const timeout = Math.min(args.timeoutMs || 15000, 60000);
+
+  // 先挂上 frameNavigated 等待器，再发导航：
+  // 否则新文档提交前的 Runtime.evaluate 还在旧文档里跑，旧文档的 readyState
+  // 天然是 complete，会立刻误判成「导航完成」。
+  const committed = new Promise(res => {
+    const t = setTimeout(() => { if (navWaiter) navWaiter = null; res(null); }, timeout);
+    navWaiter = frame => { clearTimeout(t); navWaiter = null; res(frame); };
+  });
+
   let nav;
   try {
     nav = await c.send('Page.navigate', { url });
   } catch (e) {
+    navWaiter = null;
     return { error: '导航失败：' + (e && e.message || String(e)), requested: url };
   }
-  if (nav.errorText) return { error: nav.errorText, requested: url };
+  if (nav.errorText) { navWaiter = null; return { error: nav.errorText, requested: url }; }
 
-  const timeout = Math.min(args.timeoutMs || 12000, 60000);
-  const until = Date.now() + timeout;
-  let last = null;
-  while (Date.now() < until) {
-    await sleep(200);
-    try {
-      const r = await c.send('Runtime.evaluate', {
-        expression: '({ href: location.href, ready: document.readyState, title: document.title })',
-        returnByValue: true
-      });
-      last = r.result && r.result.value;
-      if (last && last.ready === 'complete') break;
-    } catch (e) { /* 导航过程中执行上下文会短暂失效 */ }
+  const frame = await committed;
+  if (!frame) {
+    const now = await pollReady(c, 800);
+    return {
+      error: '导航超时：主 frame 没有在 ' + timeout + 'ms 内提交（可能被下载/重定向阻塞）',
+      requested: url,
+      final: now && now.href
+    };
+  }
+
+  const last = await pollReady(c, timeout);
+  if (!last) {
+    return { error: '导航已提交但页面没有进入 complete', requested: url, final: frame.url };
   }
 
   if (args.settleMs !== 0) await sleep(args.settleMs || 400);
 
-  // 记住可用的 origin，错误页之后还能用站内路径恢复
-  if (last && last.href && /^https?:\/\//.test(last.href)) {
+  if (last.href && /^https?:\/\//.test(last.href)) {
     try { lastGoodOrigin = new URL(last.href).origin; } catch (e) {}
   }
 
   return {
     ok: true,
     requested: url,
-    final: last && last.href,
-    title: last && last.title,
-    readyState: last && last.ready
+    final: last.href,
+    title: last.title,
+    readyState: last.ready,
+    committedUrl: frame.url
   };
 }
 
@@ -1086,7 +1182,14 @@ async function pageSnapshot(c) {
     returnByValue: true
   });
   const v = (r.result && r.result.value) || {};
-  return { ...v, requests: state.requests.size, logs: state.logs.length };
+  return { ...v, requests: state.requestSeq, logs: state.logSeq };
+}
+
+async function safeSnapshot(c, tries = 12) {
+  for (let i = 0; i < tries; i++) {
+    try { return await pageSnapshot(c); } catch (e) { await sleep(150); }
+  }
+  return null;
 }
 
 async function evalValue(c, expr) {
@@ -1208,7 +1311,7 @@ async function interact(args = {}) {
     throw new Error('action 只能是 scroll / click / fill / select / press');
   }
 
-  const before = await pageSnapshot(c);
+  const before = await safeSnapshot(c);
   let detail = {};
 
   if (action === 'scroll') detail = await doScroll(c, args);
@@ -1219,21 +1322,25 @@ async function interact(args = {}) {
 
   if (detail && detail.error) return { error: detail.error };
 
-  await sleep(Number(args.settleMs) || 900);   // 等请求与渲染
-  const after = await pageSnapshot(c);
+  await sleep(Math.min(Number(args.settleMs) || 900, 10000));   // 等请求与渲染
+  const after = await safeSnapshot(c);
+
+  // 点击可能触发导航：上下文会失效，safeSnapshot 会重试；都失败就明说，别假装没变化
+  const changed = (before && after) ? {
+    url: before.url !== after.url ? `${before.url} → ${after.url}` : undefined,
+    nodes: after.nodes - before.nodes,
+    textLength: after.textLength - before.textLength,
+    requests: after.requests - before.requests,
+    logs: after.logs - before.logs,
+    scrollY: after.scrollY
+  } : null;
 
   return {
     ok: true,
     action,
     ...detail,
-    changed: {
-      url: before.url !== after.url ? `${before.url} → ${after.url}` : undefined,
-      nodes: after.nodes - before.nodes,
-      textLength: after.textLength - before.textLength,
-      requests: after.requests - before.requests,
-      logs: after.logs - before.logs,
-      scrollY: after.scrollY
-    },
+    changed,
+    ...(changed ? {} : { note: '页面在动作期间发生导航，前后快照不可比；detail 里的操作结果仍然有效' }),
     snapshot: { before, after }
   };
 }
@@ -1283,11 +1390,25 @@ async function debuggerCtl(args = {}) {
   if (action === 'wait') {
     await c.send('Debugger.enable');
     const timeout = Math.min(args.timeoutMs || 8000, 30000);
-    const paused = await new Promise(res => {
-      let done = false;
-      const t = setTimeout(() => { if (!done) { done = true; res(null); } }, timeout);
-      pauseWaiters.push(p => { if (!done) { done = true; clearTimeout(t); res(p); } });
-    });
+
+    // 页面可能在 wait 之前就已经暂停（比如 exceptions 之后一报错就停下），
+    // 那份状态要能立刻取用，否则会误报「没有暂停」。
+    let paused = pausedState;
+    pausedState = null;
+
+    if (!paused) {
+      paused = await new Promise(res => {
+        let done = false;
+        const waiter = p => { if (!done) { done = true; clearTimeout(t); res(p); } };
+        const t = setTimeout(() => {
+          if (done) return;
+          done = true;
+          pauseWaiters = pauseWaiters.filter(w => w !== waiter);   // 超时要摘掉，否则每次超时留一个闭包
+          res(null);
+        }, timeout);
+        pauseWaiters.push(waiter);
+      });
+    }
     if (!paused) return { paused: false, note: timeout + 'ms 内没有暂停（确认先 exceptions 或 break）' };
     const frames = (paused.callFrames || []).slice(0, 8).map(f => ({
       fn: f.functionName || '(anonymous)',
@@ -1728,6 +1849,13 @@ async function handle(msg) {
       return;
     }
     try {
+      // 调试器停在断点上时，任何 Runtime.evaluate 都不会返回，
+      // 工具会一路挂到 15s 超时。除了 debugger_ctl，其它工具进来先自动恢复。
+      if (name !== 'debugger_ctl' && pausedState && currentConn && currentConn.alive()) {
+        try { await currentConn.send('Debugger.resume'); } catch {}
+        pausedState = null;
+        log('页面处于暂停态，已自动恢复以免阻塞');
+      }
       const out = await serialize(() => fn(params.arguments || {}));
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] } });
     } catch (e) {

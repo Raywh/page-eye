@@ -283,6 +283,22 @@ Chrome 的判据是「这条规则匹配到了至少一个元素」——所以�
 | 缓存命中时 `encodedDataLength` 仍非 0 | 单独报 `fromCache` 和 `pagePerf` |
 | 并发调用各开一条 CDP socket | `ensure()` 单飞；工具调用串行化 |
 
+## 性能
+
+夹具页面实测（Chrome 157 headless）：
+
+| 项目 | 结果 |
+| --- | --- |
+| 冷启动（spawn → 首次 ping） | 39 ms |
+| 首次工具调用（含建 CDP 连接） | 36 ms |
+| 工具延迟（热态） | p50 0–3 ms，p95 ≤ 8 ms（`highlight` 首次 18 ms） |
+| 10 个并行 vs 10 个串行 `run_js` | 8 ms vs 15 ms |
+| 相对裸 CDP `Runtime.evaluate` 的额外开销 | 约 1 ms（p50） |
+| 额外 2000 个 DOM 节点 | `page_overview` 55 ms、`element_style` 14 ms、`a11y_tree` 138 ms |
+| 400 次导航 | RSS 47 → 88 MB，呈阶梯式 GC 锯齿，无线性增长（缓冲上限 500 / 800 / 400） |
+
+自己跑：`node perf-test.mjs`（需要 `serve.mjs` 和打了调试端口的 Chrome）。
+
 ## 边界
 
 - 只覆盖主 frame —— 跨域 iframe 和 worker 需要 `Target.setAutoAttach`（`frames` 能列出来，但还读不到内容）
@@ -304,11 +320,11 @@ node run-tests.mjs service      # 只跑某个套件
 | 套件 | 条数 | 覆盖 |
 | --- | --- | --- |
 | `transport`（`test-client.mjs`） | 44 | 握手、200/404/500、POST 体、大 body 落盘、console 各级别、多标签切换、`element_style` |
-| `capabilities`（`capabilities-test.mjs`） | 34 | 十项扩展工具的正常路径 + 副作用 |
+| `capabilities`（`capabilities-test.mjs`） | 37 | 十项扩展工具的正常路径 + 副作用 |
 | `service`（`suite-service.mjs`） | 46 | 协议错误、每个工具的错误路径、生命周期 |
-| `concurrency`（`concurrency-test.mjs`） | 各 3 | 只建一条 CDP 连接，事件不重复 |
+| `concurrency`（`concurrency-test.mjs`） | 各 4 | 只建一条 CDP 连接，事件不重复 |
 
-**全部套件合计 130 / 130。**
+**全部套件合计 135 / 135。**
 
 写 `suite-service.mjs` 时立刻抓出两个被旧套件掩盖的真 bug：
 

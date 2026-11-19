@@ -35,7 +35,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'conc', version: '0' } });
 proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }) + '\n');
 
-// 冷启动就并发：先不做任何工具调用，第一条消息就是 5 个并行 run_js
+// 冷启动就并发：第一条消息就是 N 个并行 run_js。
+// 注意：工具调用是串行化的，所以这里验证的是「串行化 + 单飞 ensure」的组合效果，
+// 单独删掉其中一层这条也不一定会红。
 // —— 竞态只在 currentConn 还为空时出现
 const t0 = Date.now();
 const results = await Promise.all(
@@ -50,18 +52,20 @@ const logs = await call('console_logs', { contains: 'marker-', limit: 200 });
 const markers = logs.logs.filter(l => l.text.includes('marker-'));
 const connects = stderrLines.filter(l => l.includes('已连接')).length;
 const okResults = results.filter(r => r && !r.error).length;
+const errsSeen = stderrLines.filter(l => /error|unhandled|uncaught/i.test(l)).slice(0, 3);
 
 const checks = [
   { name: `${N} 个并行调用全部成功`, pass: okResults === N, detail: `${okResults}/${N}` },
   { name: '只建立 1 条 CDP 连接', pass: connects === 1, detail: `实际 ${connects} 条` },
-  { name: `console 事件不重复（应有 ${N} 条）`, pass: markers.length === N, detail: `实际 ${markers.length} 条` }
+  { name: `console 事件不重复（应有 ${N} 条）`, pass: markers.length === N, detail: `实际 ${markers.length} 条` },
+  { name: 'stderr 里没有 error / unhandled', pass: errsSeen.length === 0, detail: errsSeen.slice(0, 2).join(' | ') || '干净' }
 ];
 
 const failed = checks.filter(c => !c.pass);
 console.log(JSON.stringify({
   summary: { total: checks.length, pass: checks.length - failed.length, fail: failed.length },
   elapsedMs: elapsed,
-  errsSeen: stderrLines.filter(l => /error|unhandled|uncaught/i.test(l)).slice(0, 3),
+  errsSeen: errsSeen,
   checks
 }, null, 2));
 

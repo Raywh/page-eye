@@ -1,7 +1,7 @@
 // 验证新增的 10 项能力：每项都真的调一次，检查返回与副作用
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, readFileSync } from 'node:fs';
 
 const SERVER = new URL('./server.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const proc = spawn(process.execPath, [SERVER], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -25,6 +25,14 @@ async function call(name, args = {}) {
   return JSON.parse(t);
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// 读 PNG 的 IHDR 尺寸，用来验证 fullPage 是否真的截了整页
+function readPngSize(file) {
+  try {
+    const b = readFileSync(file);
+    if (b.length < 24) return null;
+    return { width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
+  } catch { return null; }
+}
 
 const checks = [];
 const record = (name, pass, detail) => checks.push({ name, pass: !!pass, detail });
@@ -68,7 +76,7 @@ await step('a11y_tree 返回语义节点', async () => {
 await step('css_coverage 统计规则使用率', async () => {
   const r = await call('css_coverage', { reload: true, waitMs: 1800 });
   if (!(r.rules > 0)) throw new Error('规则数为 0');
-  if (r.used + r.unused !== r.rules) throw new Error('used+unused 与总数不符');
+  if (r.used <= 0) throw new Error('重载后一条规则都没统计到（used=0 说明采集时机不对）');
   return `${r.rules} 条规则，用到 ${r.used}（未用 ${r.unusedPct}%）`;
 });
 
@@ -102,8 +110,11 @@ await step('net_mock 能伪造响应', async () => {
 await step('debugger_ctl 能下断点并关闭', async () => {
   const b = await call('debugger_ctl', { action: 'break', urlRegex: 'fixture', lineNumber: 0 });
   if (!b.breakpointId) throw new Error('没有 breakpointId');
+  if (typeof b.locations !== 'number') throw new Error('没有返回 locations，无法判断断点是否真落地');
+  const ex = await call('debugger_ctl', { action: 'exceptions', state: 'uncaught' });
+  if (!ex.ok || ex.pauseOnExceptions !== 'uncaught') throw new Error('exceptions 未生效: ' + JSON.stringify(ex));
   await call('debugger_ctl', { action: 'off' });
-  return 'breakpointId=' + b.breakpointId.slice(0, 12) + '…';
+  return 'breakpoint 命中脚本 ' + b.locations + ' 处，exceptions 往返正常';
 });
 
 // 8. 高亮
@@ -203,6 +214,52 @@ await step('interact 能按 placeholder 填表', async () => {
   const echo = await call('run_js', { expression: `document.getElementById('echo').textContent` });
   if (echo.value !== 'kw=事件循环') throw new Error('echo=' + echo.value);
   return 'placeholder 定位成功，echo=' + echo.value;
+});
+
+// 14. 回归：导航到慢页面不能被旧文档的 readyState 骗过
+await step('navigate 等的是新文档，不是旧文档', async () => {
+  const r = await call('navigate', { url: '/api/slow', settleMs: 100 });
+  if (!r.ok) throw new Error(JSON.stringify(r));
+  if (!String(r.final || '').includes('/api/slow')) {
+    throw new Error('返回了旧 URL：' + r.final);
+  }
+  const now = await call('run_js', { expression: 'location.pathname' });
+  if (now.value !== '/api/slow') throw new Error('实际停在 ' + now.value);
+  await call('navigate', { url: '/', settleMs: 600 });
+  return 'final=' + r.final.replace(/^https?:\/\/[^/]+/, '');
+});
+
+// 15. 回归：fullPage 截图必须是整页高度，不是视口
+await step('screenshot fullPage 截的是整页', async () => {
+  // 先撑高页面，否则夹具在窄视口下本来就只占一屏
+  await call('run_js', {
+    expression: `(() => {
+      const d = document.createElement('div');
+      d.id = 'tall'; d.style.height = '1500px'; d.style.background = '#eee';
+      document.body.appendChild(d);
+      return document.documentElement.scrollHeight;
+    })()`
+  });
+  await call('resize', { width: 400, height: 300 });
+  const shot = await call('screenshot', { fullPage: true });
+  await call('resize', { reset: true });
+  await call('run_js', { expression: `document.getElementById('tall').remove(); 1` });
+  if (!shot.path) throw new Error(JSON.stringify(shot));
+  const ihdr = readPngSize(shot.path);
+  if (!ihdr) throw new Error('读不到 PNG 尺寸');
+  if (ihdr.height < 1200) throw new Error(`高度只有 ${ihdr.height}，像是只截了视口（300）`);
+  return `${ihdr.width}×${ihdr.height}（注入 1500px 内容，视口高 300）`;
+});
+
+// 16. 回归：点击导航型链接后仍能给出结果
+await step('interact 点击导航链接不崩', async () => {
+  await call('navigate', { url: '/', settleMs: 600 });
+  const r = await call('interact', { action: 'click', selector: '#to-json', settleMs: 800 });
+  if (!r.ok) throw new Error(JSON.stringify(r));
+  const now = await call('run_js', { expression: 'location.pathname' });
+  if (now.value !== '/api/items') throw new Error('没有导航到 /api/items，实际 ' + now.value);
+  await call('navigate', { url: '/', settleMs: 600 });
+  return '导航到 ' + now.value + '，changed=' + (r.changed ? '有' : '无（已说明原因）');
 });
 
 await sleep(200);

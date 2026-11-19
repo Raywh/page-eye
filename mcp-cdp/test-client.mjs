@@ -6,7 +6,7 @@ import { writeFileSync } from 'node:fs';
 const SERVER = new URL('./server.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const proc = spawn(process.execPath, [SERVER], {
   stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env, CDP_URL_CONTAINS: '127.0.0.1:8799' }
+  env: { ...process.env, CDP_URL_CONTAINS: '127.0.0.1:' + (process.env.FIXTURE_PORT || '8799') }
 });
 
 const pending = new Map();
