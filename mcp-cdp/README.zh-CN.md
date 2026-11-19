@@ -226,12 +226,14 @@ Chrome 的判据是「这条规则匹配到了至少一个元素」——所以�
 #### `debugger_ctl`
 ```json
 { "action": "exceptions", "state": "uncaught" }
-{ "action": "break", "urlRegex": "main\\.js", "lineNumber": 41 }
+{ "action": "break", "urlRegex": "main\\.js", "lineNumber": 41, "condition": "user.id === 7" }
 { "action": "wait", "timeoutMs": 8000 }
 { "action": "resume" }
 { "action": "off" }
 ```
 `wait` 会阻塞到调试器暂停，返回最多 8 层调用栈（`fn`、`url`、`line`），除非传 `"resume": false` 否则自动恢复。
+
+`break` 支持 `condition`。断点由服务端记录并显式删除——`Debugger.disable` 不保证清干净，同一位置重复下断点会报 `Breakpoint at specified location already exists`。
 
 ### Network
 
@@ -258,10 +260,19 @@ Chrome 的判据是「这条规则匹配到了至少一个元素」——所以�
 
 #### `net_mock`
 ```json
-{ "urlPattern": "/api/items", "status": 500, "body": "{\"error\":\"boom\"}" }
+{ "urlPattern": "/api/items", "mode": "fulfill", "status": 500, "body": "{\"error\":\"boom\"}" }
+{ "urlPattern": "/api/analytics", "mode": "abort", "errorReason": "Aborted" }
+{ "urlPattern": "/api/old", "mode": "rewrite", "url": "/api/items" }
 { "clear": true }
 ```
-启用 Fetch 域并伪造匹配的请求，未匹配的原样放行。
+
+| mode | 作用 |
+| --- | --- |
+| `fulfill`（默认） | 用 `status` / `body` / `headers` 直接应答 |
+| `abort` | 用 `errorReason` 让请求失败 |
+| `rewrite` | 放行，但先改掉 `url` / `method` / `headers` / `postData` |
+
+`rewrite` 的 `url` 可以写站内相对路径，服务端会补成绝对地址——`Fetch.continueRequest` 只接受绝对 URL。
 
 ### Performance
 
@@ -332,11 +343,11 @@ node run-tests.mjs service      # 只跑某个套件
 | 套件 | 条数 | 覆盖 |
 | --- | --- | --- |
 | `transport`（`test-client.mjs`） | 44 | 握手、200/404/500、POST 体、大 body 落盘、console 各级别、多标签切换、`element_style` |
-| `capabilities`（`capabilities-test.mjs`） | 38 | 十项扩展工具的正常路径 + 副作用 |
+| `capabilities`（`capabilities-test.mjs`） | 42 | 十项扩展工具的正常路径 + 副作用 |
 | `service`（`suite-service.mjs`） | 46 | 协议错误、每个工具的错误路径、生命周期 |
 | `concurrency`（`concurrency-test.mjs`） | 各 4 | 只建一条 CDP 连接，事件不重复 |
 
-**全部套件合计 136 / 136。**
+**全部套件合计 140 / 140。**
 
 写 `suite-service.mjs` 时立刻抓出两个被旧套件掩盖的真 bug：
 

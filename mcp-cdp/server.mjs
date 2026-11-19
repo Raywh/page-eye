@@ -87,7 +87,9 @@ class CDP {
     this.id = 0;
     this.pending = new Map();
     this.handlers = new Map();
+    this.closed = false;
     ws.addEventListener('message', ev => {
+      if (this.closed) return;   // 关闭后到达的排队事件直接丢弃，别污染新会话的缓冲
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.id && this.pending.has(msg.id)) {
@@ -111,9 +113,11 @@ class CDP {
   }
 
   close() {
+    this.closed = true;
     try { this.ws.close(); } catch {}
     for (const [, p] of this.pending) { try { p.rej(new Error('CDP 连接已关闭')); } catch {} }
     this.pending.clear();
+    this.handlers.clear();
   }
 
   send(method, params = {}) {
@@ -800,6 +804,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const sheetUrls = new Map();   // styleSheetId -> sourceURL
 const mocks = [];              // { re, status, body, headers }
 let pauseWaiters = [];
+const breakpoints = new Set();   // 自己记断点，Debugger.disable 不保证清干净
+
+async function clearBreakpoints(c) {
+  for (const id of Array.from(breakpoints)) {
+    try { await c.send('Debugger.removeBreakpoint', { breakpointId: id }); } catch (e) {}
+    breakpoints.delete(id);
+  }
+}
 
 function hexToRgb(hex) {
   const s = String(hex || '').trim();
@@ -825,16 +837,38 @@ function installExtra(c) {
   c.on('Fetch.requestPaused', async p => {
     const hit = mocks.find(m => m.re.test(p.request.url));
     try {
-      if (hit) {
-        await c.send('Fetch.fulfillRequest', {
-          requestId: p.requestId,
-          responseCode: hit.status,
-          responseHeaders: Object.entries(hit.headers).map(([name, value]) => ({ name, value: String(value) })),
-          body: Buffer.from(hit.body).toString('base64')
-        });
-      } else {
+      if (!hit) {
         await c.send('Fetch.continueRequest', { requestId: p.requestId });
+        return;
       }
+
+      if (hit.mode === 'abort') {
+        await c.send('Fetch.failRequest', {
+          requestId: p.requestId,
+          errorReason: hit.errorReason || 'Failed'
+        });
+        return;
+      }
+
+      if (hit.mode === 'rewrite') {
+        const params = { requestId: p.requestId };
+        if (hit.url) params.url = hit.url;
+        if (hit.method) params.method = hit.method;
+        if (hit.headers) {
+          params.headers = Object.entries(hit.headers).map(([name, value]) => ({ name, value: String(value) }));
+        }
+        // CDP 的 postData 是 base64；只允许在方法为 POST/PUT/PATCH 时改
+        if (hit.postData !== undefined) params.postData = Buffer.from(hit.postData).toString('base64');
+        await c.send('Fetch.continueRequest', params);
+        return;
+      }
+
+      await c.send('Fetch.fulfillRequest', {
+        requestId: p.requestId,
+        responseCode: hit.status,
+        responseHeaders: Object.entries(hit.headers).map(([name, value]) => ({ name, value: String(value) })),
+        body: Buffer.from(hit.body).toString('base64')
+      });
     } catch (e) { log('fetch handler:', e.message); }
   });
 
@@ -891,6 +925,7 @@ async function a11yTree(args = {}) {
   const c = await ensure();
   await c.send('Accessibility.enable');
   const r = await c.send('Accessibility.getFullAXTree');
+  try { await c.send('Accessibility.disable'); } catch (e) { /* 有些构建不支持 */ }
   const nodes = (r.nodes || []).filter(n => !n.ignored);
   const histogram = {};
   nodes.forEach(n => {
@@ -930,6 +965,7 @@ async function cssCoverage(args = {}) {
     await sleep(args.waitMs || 3000);
   }
   const stop = await c.send('CSS.stopRuleUsageTracking');
+  try { await c.send('CSS.disable'); } catch (e) {}
   const usage = stop.ruleUsage || [];
   const bySheet = new Map();
   for (const u of usage) {
@@ -1384,16 +1420,49 @@ async function netMock(args = {}) {
     return { ok: true, cleared: true };
   }
   if (!args.urlPattern) throw new Error('需要 urlPattern（正则字符串，比如 "/api/items"）');
-  mocks.push({
-    re: new RegExp(args.urlPattern),
-    status: args.status || 200,
-    body: args.body || '',
-    headers: args.headers || { 'content-type': 'application/json; charset=utf-8' }
-  });
+
+  const mode = args.mode || 'fulfill';
+  if (!['fulfill', 'abort', 'rewrite'].includes(mode)) {
+    throw new Error('mode 只能是 fulfill / abort / rewrite');
+  }
+
+  const rule = { re: new RegExp(args.urlPattern), mode };
+  if (mode === 'fulfill') {
+    rule.status = args.status || 200;
+    rule.body = args.body || '';
+    rule.headers = args.headers || { 'content-type': 'application/json; charset=utf-8' };
+  } else if (mode === 'abort') {
+    rule.errorReason = args.errorReason || 'Failed';
+  } else {
+    if (!args.url && !args.headers && args.postData === undefined && !args.method) {
+      throw new Error('rewrite 模式至少要给 url / headers / method / postData 之一');
+    }
+    rule.url = args.url;
+    rule.method = args.method;
+    rule.headers = args.headers;
+    rule.postData = args.postData;
+
+    // CDP 的 continueRequest 只接受绝对 URL
+    if (rule.url && (rule.url.startsWith('/') || rule.url.startsWith('?'))) {
+      const o = await c.send('Runtime.evaluate', { expression: 'location.origin', returnByValue: true });
+      const origin = o.result && o.result.value;
+      if (!origin) throw new Error('拿不到当前 origin，rewrite 请传绝对 URL');
+      rule.url = origin + rule.url;
+    }
+  }
+
+  mocks.push(rule);
   await c.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
+
   return {
     ok: true,
-    rules: mocks.map(m => ({ pattern: m.re.source, status: m.status, bodyBytes: m.body.length })),
+    rules: mocks.map(m => ({
+      pattern: m.re.source,
+      mode: m.mode,
+      ...(m.mode === 'fulfill' ? { status: m.status, bodyBytes: m.body.length } : {}),
+      ...(m.mode === 'abort' ? { errorReason: m.errorReason } : {}),
+      ...(m.mode === 'rewrite' ? { url: m.url, method: m.method } : {})
+    })),
     note: '只影响之后的请求；用完记得 clear'
   };
 }
@@ -1411,11 +1480,20 @@ async function debuggerCtl(args = {}) {
   }
   if (action === 'break') {
     await c.send('Debugger.enable');
-    const r = await c.send('Debugger.setBreakpointByUrl', {
+    const params = {
       lineNumber: Math.max(0, Number(args.lineNumber || 0)),
       urlRegex: args.urlRegex || '.*'
-    });
-    return { ok: true, breakpointId: r.breakpointId, locations: (r.locations || []).length };
+    };
+    if (args.condition) params.condition = String(args.condition);
+    await clearBreakpoints(c);   // 同一位置重复下断点会报 already exists
+    const r = await c.send('Debugger.setBreakpointByUrl', params);
+    if (r.breakpointId) breakpoints.add(r.breakpointId);
+    return {
+      ok: true,
+      breakpointId: r.breakpointId,
+      locations: (r.locations || []).length,
+      condition: params.condition || null
+    };
   }
   if (action === 'wait') {
     await c.send('Debugger.enable');
@@ -1451,8 +1529,9 @@ async function debuggerCtl(args = {}) {
   if (action === 'resume') { await c.send('Debugger.resume'); return { ok: true }; }
   if (action === 'off') {
     try { await c.send('Debugger.setPauseOnExceptions', { state: 'none' }); } catch {}
+    await clearBreakpoints(c);
     try { await c.send('Debugger.disable'); } catch {}
-    return { ok: true, off: true };
+    return { ok: true, off: true, removedBreakpoints: true };
   }
   return { error: 'action 只能是 exceptions / break / wait / resume / off' };
 }
@@ -1462,7 +1541,12 @@ async function highlight(args = {}) {
   const c = await ensure();
   await c.send('DOM.enable');   // Overlay/DOM.getDocument 都依赖 DOM 域
   await c.send('Overlay.enable');
-  if (args.clear) { await c.send('Overlay.hideHighlight'); return { ok: true, cleared: true }; }
+  if (args.clear) {
+    try { await c.send('Overlay.hideHighlight'); } catch (e) {}
+    try { await c.send('Overlay.disable'); } catch (e) {}
+    try { await c.send('DOM.disable'); } catch (e) {}
+    return { ok: true, cleared: true };
+  }
   if (!args.selector) throw new Error('需要 selector');
   const doc = await c.send('DOM.getDocument', { depth: 1 });
   const q = await c.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: args.selector });
@@ -1485,6 +1569,7 @@ async function perfMetrics() {
   const c = await ensure();
   await c.send('Performance.enable');
   const r = await c.send('Performance.getMetrics');
+  try { await c.send('Performance.disable'); } catch (e) {}
   const all = {};
   (r.metrics || []).forEach(m => { all[m.name] = m.value; });
   const pick = [

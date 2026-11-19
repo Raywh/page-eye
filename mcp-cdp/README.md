@@ -226,12 +226,14 @@ The escape hatch. Read the DOM, compute styles, click, call an API.
 #### `debugger_ctl`
 ```json
 { "action": "exceptions", "state": "uncaught" }
-{ "action": "break", "urlRegex": "main\\.js", "lineNumber": 41 }
+{ "action": "break", "urlRegex": "main\\.js", "lineNumber": 41, "condition": "user.id === 7" }
 { "action": "wait", "timeoutMs": 8000 }
 { "action": "resume" }
 { "action": "off" }
 ```
 `wait` blocks until the debugger pauses, returns up to 8 call frames (`fn`, `url`, `line`) and resumes unless you pass `"resume": false`.
+
+`break` supports `condition`; breakpoints are tracked and removed explicitly, because `Debugger.disable` does not reliably clear them and re-adding the same location fails with `Breakpoint at specified location already exists`.
 
 ### Network
 
@@ -258,10 +260,19 @@ Conditions persist until reset. Pair with `recorder reload` to measure a real fi
 
 #### `net_mock`
 ```json
-{ "urlPattern": "/api/items", "status": 500, "body": "{\"error\":\"boom\"}" }
+{ "urlPattern": "/api/items", "mode": "fulfill", "status": 500, "body": "{\"error\":\"boom\"}" }
+{ "urlPattern": "/api/analytics", "mode": "abort", "errorReason": "Aborted" }
+{ "urlPattern": "/api/old", "mode": "rewrite", "url": "/api/items" }
 { "clear": true }
 ```
-Enables the Fetch domain and fulfils matching requests. Everything unmatched is continued untouched.
+
+| mode | Effect |
+| --- | --- |
+| `fulfill` (default) | Answer with `status` / `body` / `headers` |
+| `abort` | Fail the request with `errorReason` |
+| `rewrite` | Let it through, but change `url` / `method` / `headers` / `postData` first |
+
+`rewrite` accepts a site-relative `url`; it is resolved to an absolute URL because `Fetch.continueRequest` only takes absolute ones.
 
 ### Performance
 
@@ -332,11 +343,11 @@ The runner starts the fixture server and a **fresh Chrome per suite**, so suites
 | Suite | Checks | Covers |
 | --- | --- | --- |
 | `transport` (`test-client.mjs`) | 44 | handshake, 200/404/500, POST body, body spill, console levels, tab switching, `element_style` |
-| `capabilities` (`capabilities-test.mjs`) | 38 | the ten extended tools, happy path + side effects |
+| `capabilities` (`capabilities-test.mjs`) | 42 | the ten extended tools, happy path + side effects |
 | `service` (`suite-service.mjs`) | 46 | protocol errors, every tool's error path, lifecycle |
 | `concurrency` (`concurrency-test.mjs`) | 4 × 2 | one CDP connection, no duplicate events |
 
-**136 / 136 across all suites.**
+**140 / 140 across all suites.**
 
 Writing `suite-service.mjs` immediately found two real bugs that the earlier suites had hidden:
 

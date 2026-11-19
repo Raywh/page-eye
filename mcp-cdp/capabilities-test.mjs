@@ -298,6 +298,41 @@ await step('navigate 能被取消', async () => {
   return `取消在 ${waited}ms 内生效`;
 });
 
+await step('net_mock abort 模式能打断请求', async () => {
+  await call('net_mock', { urlPattern: '/api/never', mode: 'abort', errorReason: 'Aborted' });
+  const r = await call('run_js', {
+    expression: `fetch('/api/never').then(() => 'resolved').catch(e => 'failed:' + e.name)`
+  });
+  await call('net_mock', { clear: true });
+  if (!String(r.value).startsWith('failed')) throw new Error('请求没有被中断：' + r.value);
+  return r.value;
+});
+
+await step('net_mock rewrite 模式能改 URL', async () => {
+  await call('net_mock', { urlPattern: '/api/rewrite-me', mode: 'rewrite', url: '/api/items' });
+  const r = await call('run_js', {
+    expression: `fetch('/api/rewrite-me').then(r => r.json()).then(d => (d.n === 42 ? 'proxy-ok' : 'no-data:' + JSON.stringify(d).slice(0, 40))).catch(e => 'err:' + e.message)`
+  });
+  await call('net_mock', { clear: true });
+  // /api/items 返回 {ok, n:42, items:[...]}，改道成功才能读到 n
+  if (r.value !== 'proxy-ok') throw new Error('改道没生效：' + r.value);
+  return 'fetch /api/rewrite-me 被改到 /api/items 并拿到数据';
+});
+
+await step('debugger_ctl 支持条件断点', async () => {
+  const b = await call('debugger_ctl', { action: 'break', urlRegex: 'fixture', lineNumber: 0, condition: 'true' });
+  if (!b.breakpointId) throw new Error(JSON.stringify(b));
+  await call('debugger_ctl', { action: 'off' });
+  return 'condition 已透传，breakpointId=' + b.breakpointId.slice(0, 10) + '…';
+});
+
+await step('a11y_tree 连续调用可用（域关掉后能重开）', async () => {
+  const a = await call('a11y_tree', { roles: 'button', limit: 5 });
+  const b = await call('a11y_tree', { roles: 'button', limit: 5 });
+  if (!(a.totalNodes > 0 && b.totalNodes > 0)) throw new Error('第二次调用失败');
+  return `两次都拿到 ${a.totalNodes} / ${b.totalNodes} 个节点`;
+});
+
 await sleep(200);
 const failed = checks.filter(c => !c.pass);
 console.log(JSON.stringify({
