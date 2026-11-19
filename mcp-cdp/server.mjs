@@ -36,10 +36,30 @@ const state = {
   requests: new Map(),   // requestId -> record
   order: [],             // requestId 顺序
   logs: [],              // {ts, level, source, text}
+  ws: [],                // WebSocket 帧 {ts, dir, url, opcode, payload}
   skipped: 0,
   requestSeq: 0,         // 单调递增，缓冲淘汰后仍能算差
-  logSeq: 0
+  logSeq: 0,
+  wsSeq: 0
 };
+
+const MAX_WS = 300;
+const wsSockets = new Map();   // requestId -> url
+
+function pushWsFrame(dir, p, sid) {
+  const r = p.response || {};
+  state.ws.push({
+    ts: Date.now(),
+    dir,
+    url: truncate(wsSockets.get(p.requestId) || '', 180),
+    opcode: r.opcode,
+    size: (r.payloadData || '').length,
+    payload: truncate(String(r.payloadData || ''), 600),
+    frame: sid ? ((children.get(sid) || {}).url || sid) : undefined
+  });
+  state.wsSeq++;
+  while (state.ws.length > MAX_WS) state.ws.shift();
+}
 
 function pushRequest(rec) {
   state.requests.set(rec.requestId, rec);
@@ -78,6 +98,9 @@ function reset() {
   state.skipped = 0;
   state.requestSeq = 0;
   state.logSeq = 0;
+  state.ws.length = 0;
+  state.wsSeq = 0;
+  wsSockets.clear();
 }
 
 // ------------------------------------------------------------------ CDP
@@ -98,7 +121,7 @@ class CDP {
         msg.error ? rej(new Error(msg.error.message || JSON.stringify(msg.error))) : res(msg.result);
       } else if (msg.method) {
         const hs = this.handlers.get(msg.method);
-        if (hs) hs.forEach(fn => { try { fn(msg.params); } catch (e) { log('handler error', e.message); } });
+        if (hs) hs.forEach(fn => { try { fn(msg.params, msg.sessionId); } catch (e) { log('handler error', e.message); } });
       }
     });
   }
@@ -120,7 +143,7 @@ class CDP {
     this.handlers.clear();
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, sessionId) {
     if (!this.alive()) return Promise.reject(new Error('CDP 连接已断开: ' + method));
     const id = ++this.id;
     return new Promise((res, rej) => {
@@ -139,7 +162,9 @@ class CDP {
       });
 
       try {
-        this.ws.send(JSON.stringify({ id, method, params }));
+        const msg = { id, method, params };
+        if (sessionId) msg.sessionId = sessionId;
+        this.ws.send(JSON.stringify(msg));
       } catch (e) {
         clearTimeout(timer);
         this.pending.delete(id);
@@ -201,16 +226,24 @@ async function connectNow() {
   currentTargetId = null;
   if (switching) { reset(); resetSession(); }
 
+  children.clear();
   const c = await CDP.connectTo(target);
   try {
     await c.send('Network.enable', { maxTotalBufferSize: 20 * 1024 * 1024 });
     await c.send('Runtime.enable');
     await c.send('Page.enable');
     await c.send('Log.enable');
+    // flatten 模式：子会话复用同一条 WebSocket，靠 sessionId 区分
+    await c.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
   } catch (e) {
     c.close();          // 半连接不能留着，否则它照样往共享缓冲里写事件
     throw e;
   }
+  try {
+    const o = await c.send('Runtime.evaluate', { expression: 'location.origin', returnByValue: true });
+    pageOrigin = (o.result && o.result.value) || null;
+  } catch (e) { pageOrigin = null; }
+
   install(c);
   installExtra(c);
 
@@ -369,6 +402,13 @@ function install(c) {
     }
   });
 
+  c.on('Network.webSocketCreated', p => {
+    wsSockets.set(p.requestId, p.url || '');
+  });
+
+  c.on('Network.webSocketFrameSent', (p, sid) => pushWsFrame('sent', p, sid));
+  c.on('Network.webSocketFrameReceived', (p, sid) => pushWsFrame('recv', p, sid));
+
   c.on('Network.loadingFailed', p => {
     const rec = state.requests.get(p.requestId);
     if (!rec) return;
@@ -377,23 +417,25 @@ function install(c) {
     rec.endTs = Date.now();
   });
 
-  c.on('Runtime.consoleAPICalled', p => {
+  c.on('Runtime.consoleAPICalled', (p, sid) => {
     // CDP 里 console.warn 的 type 是 'warning'，不是 'warn' —— 统一成人们会输入的那个
     const level = p.type === 'warning' ? 'warn' : p.type;
     pushLog({
       ts: Date.now(),
       level: level,
       source: 'console',
+      frame: frameOf(p.executionContextId, sid),
       text: truncate(p.args.map(formatArg).join(' '), 2000)
     });
   });
 
-  c.on('Runtime.exceptionThrown', p => {
+  c.on('Runtime.exceptionThrown', (p, sid) => {
     const d = p.exceptionDetails || {};
     pushLog({
       ts: Date.now(),
       level: 'exception',
       source: 'runtime',
+      frame: sid ? ((children.get(sid) || {}).url || sid) : undefined,
       text: truncate((d.exception && (d.exception.description || d.exception.value)) || d.text || 'unknown', 2000),
       url: d.url,
       line: d.lineNumber
@@ -409,6 +451,37 @@ function install(c) {
       text: truncate(e.text || '', 2000),
       url: e.url
     });
+  });
+
+  c.on('Runtime.executionContextCreated', (p, sid) => {
+    const ctx = p.context || {};
+    if (!ctx.id) return;
+    contexts.set(ctx.id, {
+      origin: ctx.origin || '',
+      frameId: (ctx.auxData && ctx.auxData.frameId) || '',
+      sid: sid || null
+    });
+  });
+
+  c.on('Runtime.executionContextDestroyed', p => {
+    contexts.delete(p.executionContextId);
+  });
+
+  c.on('Target.attachedToTarget', async p => {
+    const sid = p.sessionId;
+    const info = p.targetInfo || {};
+    children.set(sid, { type: info.type, url: info.url || '', title: info.title || '', targetId: info.targetId });
+    log('子会话', info.type, (info.url || '').slice(0, 70));
+    try {
+      await c.send('Runtime.enable', {}, sid);
+      await c.send('Log.enable', {}, sid);
+      await c.send('Page.enable', {}, sid);
+      await c.send('Network.enable', { maxTotalBufferSize: 5 * 1024 * 1024 }, sid);
+    } catch (e) { log('子会话 enable 失败:', e.message); }
+  });
+
+  c.on('Target.detachedFromTarget', p => {
+    children.delete(p.sessionId);
   });
 
   c.on('Page.frameNavigated', p => {
@@ -754,14 +827,68 @@ async function consoleLogs(args = {}) {
   };
 }
 
+function flattenFrames(tree) {
+  const out = [];
+  (function walk(node) {
+    if (!node || !node.frame) return;
+    out.push(node.frame);
+    (node.childFrames || []).forEach(walk);
+  })(tree);
+  return out;
+}
+
+// 跨域 iframe（OOPIF）的 frame 不在主会话的 frame tree 里，要问子会话自己
+async function fillSessionUrls(c) {
+  for (const [sid, info] of children) {
+    if (info.url) continue;
+    try {
+      const t = await c.send('Page.getFrameTree', {}, sid);
+      const url = t && t.frameTree && t.frameTree.frame && t.frameTree.frame.url;
+      if (url) info.url = url;
+    } catch (e) { /* 子会话可能已经销毁 */ }
+  }
+}
+
+async function resolveSession(c, frame) {
+  if (!frame) return undefined;
+  await fillSessionUrls(c);
+  for (const [sid, info] of children) {
+    if (sid === frame) return sid;
+    if ((info.url || '').includes(frame)) return sid;
+    if ((info.title || '').includes(frame)) return sid;
+  }
+  return null;
+}
+
+// 一条日志属于哪个 frame：跨域上下文才标，主文档的日志保持干净
+function frameOf(contextId, sid) {
+  const ctx = contextId ? contexts.get(contextId) : null;
+  if (ctx && ctx.origin && pageOrigin && ctx.origin !== pageOrigin) return ctx.origin;
+  if (sid) {
+    const info = children.get(sid);
+    if (info) return info.url || info.type;
+  }
+  return undefined;
+}
+
 async function runJs(args = {}) {
   const c = await ensure();
+  let sid;
+  if (args.frame) {
+    sid = await resolveSession(c, args.frame);
+    if (!sid) {
+      return {
+        error: '没有匹配到子会话：' + args.frame,
+        available: Array.from(children.values()).map(x => x.url || x.type)
+      };
+    }
+  }
   const r = await c.send('Runtime.evaluate', {
     expression: args.expression,
     returnByValue: true,
     awaitPromise: args.awaitPromise !== false,
     userGesture: true
-  });
+  }, sid);
   if (r.exceptionDetails) {
     return { error: r.exceptionDetails.text, detail: r.exceptionDetails.exception && r.exceptionDetails.exception.description };
   }
@@ -802,6 +929,9 @@ async function recorder(args = {}) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const sheetUrls = new Map();   // styleSheetId -> sourceURL
+const children = new Map();    // sessionId -> { type, url, title }，跨域 iframe / worker
+const contexts = new Map();    // executionContextId -> { origin, frameId, sid }
+let pageOrigin = null;         // 主文档 origin，用来判断某条日志是不是来自跨域 iframe
 const mocks = [];              // { re, status, body, headers }
 let pauseWaiters = [];
 const breakpoints = new Set();   // 自己记断点，Debugger.disable 不保证清干净
@@ -878,7 +1008,44 @@ function installExtra(c) {
     w.forEach(fn => { try { fn(p); } catch {} });
   });
 
-  c.on('Page.frameNavigated', p => {
+  c.on('Runtime.executionContextCreated', (p, sid) => {
+    const ctx = p.context || {};
+    if (!ctx.id) return;
+    contexts.set(ctx.id, {
+      origin: ctx.origin || '',
+      frameId: (ctx.auxData && ctx.auxData.frameId) || '',
+      sid: sid || null
+    });
+  });
+
+  c.on('Runtime.executionContextDestroyed', p => {
+    contexts.delete(p.executionContextId);
+  });
+
+  c.on('Target.attachedToTarget', async p => {
+    const sid = p.sessionId;
+    const info = p.targetInfo || {};
+    children.set(sid, { type: info.type, url: info.url || '', title: info.title || '', targetId: info.targetId });
+    log('子会话', info.type, (info.url || '').slice(0, 70));
+    try {
+      await c.send('Runtime.enable', {}, sid);
+      await c.send('Log.enable', {}, sid);
+      await c.send('Page.enable', {}, sid);
+      await c.send('Network.enable', { maxTotalBufferSize: 5 * 1024 * 1024 }, sid);
+    } catch (e) { log('子会话 enable 失败:', e.message); }
+  });
+
+  c.on('Target.detachedFromTarget', p => {
+    children.delete(p.sessionId);
+  });
+
+  c.on('Page.frameNavigated', (p, sid) => {
+    // 子会话的 targetInfo.url 在附加时常常是空的，用它的 frameNavigated 补上
+    if (sid && p.frame && children.has(sid)) {
+      const info = children.get(sid);
+      if (p.frame.url) info.url = p.frame.url;
+      if (p.frame.url && !info.title) info.title = p.frame.url.split('/').pop() || '';
+    }
     if (navWaiter && p.frame && !p.frame.parentId) {
       const w = navWaiter; navWaiter = null; w(p.frame);
     }
@@ -1411,6 +1578,33 @@ async function interact(args = {}) {
   };
 }
 
+// ---- WebSocket 帧
+async function wsFrames(args = {}) {
+  const c = await ensure();
+  if (args.clear) {
+    state.ws.length = 0;
+    state.wsSeq = 0;
+    return { ok: true, cleared: true };
+  }
+  let items = state.ws;
+  if (args.url) items = items.filter(x => (x.url || '').includes(args.url));
+  if (args.direction) items = items.filter(x => x.dir === args.direction);
+  const limit = Math.min(args.limit || 40, 300);
+  return {
+    total: state.ws.length,
+    returned: Math.min(items.length, limit),
+    frames: items.slice(-limit).map(f => ({
+      dir: f.dir,
+      url: f.url,
+      opcode: f.opcode,
+      size: f.size,
+      payload: truncate(f.payload, args.maxPayload || 400),
+      frame: f.frame
+    })),
+    note: 'opcode 1 = 文本帧，2 = 二进制帧；只记录 Network 域可见的帧，不含别的 App 流量'
+  };
+}
+
 // ---- 请求 mock / 改响应
 async function netMock(args = {}) {
   const c = await ensure();
@@ -1587,6 +1781,7 @@ async function perfMetrics() {
 // ---- 帧与子 target
 async function frames() {
   const c = await ensure();
+  await fillSessionUrls(c).catch(() => {});
   const tree = await c.send('Page.getFrameTree');
   const flat = [];
   (function walk(node) {
@@ -1611,7 +1806,13 @@ async function frames() {
     frameCount: flat.length,
     frames: flat,
     subTargets: detached,
-    note: '跨域 iframe / worker 的内容要 Target.setAutoAttach 之后才读得到；这里只列出来'
+    sessions: Array.from(children.entries()).map(([sid, info]) => ({
+      sessionId: sid,
+      type: info.type,
+      url: truncate(info.url || '', 120),
+      title: info.title
+    })),
+    note: 'sessions 里的会话可以用 run_js({ frame: "<url 片段或 sessionId>" }) 在里面执行代码'
   };
 }
 
@@ -1713,7 +1914,8 @@ const TOOLS = [
       properties: {
         expression: { type: 'string' },
         awaitPromise: { type: 'boolean', description: '默认 true' },
-        maxLength: { type: 'number', description: '返回值上限，默认 6000' }
+        maxLength: { type: 'number', description: '返回值上限，默认 6000' },
+        frame: { type: 'string', description: '在指定子会话（跨域 iframe / worker）里执行；可用 frames() 返回的 url 片段或 sessionId' }
       },
       required: ['expression'],
       additionalProperties: false
@@ -1728,6 +1930,21 @@ const TOOLS = [
         action: { type: 'string', enum: ['status', 'clear', 'reload'] },
         ignoreCache: { type: 'boolean' },
         waitMs: { type: 'number' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'ws_frames',
+    description: '读 WebSocket 帧（收发都记）：URL、opcode、大小、载荷预览。用来确认长连接上到底推了什么。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '按 WS 地址片段过滤' },
+        direction: { type: 'string', enum: ['sent', 'recv'], description: '只看发出或收到' },
+        limit: { type: 'number', description: '默认 40，最多 300' },
+        maxPayload: { type: 'number', description: '单帧载荷上限，默认 400 字符' },
+        clear: { type: 'boolean', description: '清空已记录的帧' }
       },
       additionalProperties: false
     }
@@ -1919,6 +2136,7 @@ const IMPL = {
   console_logs: consoleLogs,
   run_js: runJs,
   recorder: recorder,
+  ws_frames: wsFrames,
   net_conditions: netConditions,
   a11y_tree: a11yTree,
   css_coverage: cssCoverage,

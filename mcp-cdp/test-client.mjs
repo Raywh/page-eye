@@ -63,7 +63,7 @@ try {
 
   // ---- 2. 工具列表
   const list = await rpc('tools/list', {});
-  record('tools/list 返回 22 个工具', list.tools.length === 22, list.tools.length);
+  record('tools/list 返回 23 个工具', list.tools.length === 23, list.tools.length);
   record('每个工具有 inputSchema', list.tools.every(t => t.inputSchema && t.inputSchema.type === 'object'), null);
 
   // ---- 3. 从零开始录（attach 之前的请求抓不到，reload 才完整）

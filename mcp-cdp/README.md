@@ -149,7 +149,7 @@ The snapshot script is injected **once per document** and kept under `window.__p
 The accessibility tree — 1300 AX nodes on a normal blog collapse to a couple hundred meaningful roles. Cheaper and more semantic than a DOM dump.
 
 #### `frames`
-No parameters. All frames plus iframe/worker sub-targets. If the thing you are looking for is "not there", it is usually in another frame.
+No parameters. All frames plus iframe/worker sub-targets and the attached `sessions` with their URLs. If the thing you are looking for is "not there", it is usually in another frame — take its URL from here and pass it to `run_js({ frame })`.
 
 #### `screenshot`
 ```json
@@ -218,8 +218,11 @@ Captures `console.*`, uncaught exceptions and browser log entries (CSP, resource
 #### `run_js`
 ```json
 { "expression": "document.title", "awaitPromise": true, "maxLength": 6000 }
+{ "expression": "document.querySelector('.price').textContent", "frame": "my-iframe" }
 ```
 The escape hatch. Read the DOM, compute styles, click, call an API.
+
+`frame` runs the expression inside a child session (cross-origin iframe or worker) instead of the main document. Pass a URL fragment or a `sessionId` from `frames()`. OOPIF frame URLs are resolved by asking the child session for its own frame tree, because a cross-origin iframe does not appear in the parent's tree.
 
 ### Sources
 
@@ -250,6 +253,13 @@ Summaries only, each with a `requestId`, a `body` marker (`inline` / `file:<path
 Headers, POST body, response body. Bodies over 8000 characters come back as `bodyFile` + `bodyPreview`.
 
 > Response bodies are only available while the request is still alive in the renderer. The server fetches them immediately on `loadingFinished`; querying later returns `No resource with given identifier`.
+
+#### `ws_frames`
+```json
+{ "url": "/ws", "direction": "recv", "limit": 40 }
+{ "clear": true }
+```
+WebSocket frames captured via `Network.webSocketFrameSent/Received`. `opcode` 1 is text, 2 is binary; payloads are truncated (default 400 chars). The buffer holds 300 frames.
 
 #### `net_conditions`
 ```json
@@ -324,8 +334,8 @@ Run it yourself: `node perf-test.mjs` (needs `serve.mjs` + Chrome on `CDP_ENDPOI
 
 ## Limits
 
-- Main frame only — cross-origin iframes and workers need `Target.setAutoAttach` (listed by `frames`, not readable yet)
-- No WebSocket frames (`Network.webSocketFrameReceived` not wired up)
+- Cross-origin iframes and workers: content is readable through `run_js({ frame })`, but their console lines are delivered on the main session, so a log entry cannot be attributed to a frame reliably
+- WebSocket payloads are truncated for display; binary frames are flagged by opcode but not decoded
 - Request and log buffers cap at 500 / 800 entries, oldest dropped
 - Binary response bodies are marked, not stored
 - `recorder reload` blocks other tool calls until the page settles
@@ -343,11 +353,11 @@ The runner starts the fixture server and a **fresh Chrome per suite**, so suites
 | Suite | Checks | Covers |
 | --- | --- | --- |
 | `transport` (`test-client.mjs`) | 44 | handshake, 200/404/500, POST body, body spill, console levels, tab switching, `element_style` |
-| `capabilities` (`capabilities-test.mjs`) | 42 | the ten extended tools, happy path + side effects |
+| `capabilities` (`capabilities-test.mjs`) | 48 | the ten extended tools, happy path + side effects |
 | `service` (`suite-service.mjs`) | 46 | protocol errors, every tool's error path, lifecycle |
 | `concurrency` (`concurrency-test.mjs`) | 4 × 2 | one CDP connection, no duplicate events |
 
-**140 / 140 across all suites.**
+**146 / 146 across all suites.**
 
 Writing `suite-service.mjs` immediately found two real bugs that the earlier suites had hidden:
 

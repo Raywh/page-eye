@@ -67,9 +67,9 @@ proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initial
 
 // 0. 工具清单
 const list = await rpc('tools/list', {});
-record('工具总数为 22', list.tools.length === 22, list.tools.length);
+record('工具总数为 23', list.tools.length === 23, list.tools.length);
 const names = list.tools.map(t => t.name);
-['net_conditions', 'a11y_tree', 'css_coverage', 'emulate_media', 'screenshot', 'net_mock', 'debugger_ctl', 'highlight', 'perf_metrics', 'frames', 'resize', 'navigate', 'interact']
+['net_conditions', 'a11y_tree', 'css_coverage', 'emulate_media', 'screenshot', 'net_mock', 'debugger_ctl', 'highlight', 'perf_metrics', 'frames', 'resize', 'navigate', 'interact', 'ws_frames']
   .forEach(n => record('新工具已注册: ' + n, names.includes(n), null));
 
 // 1. 网络条件
@@ -331,6 +331,50 @@ await step('a11y_tree 连续调用可用（域关掉后能重开）', async () =
   const b = await call('a11y_tree', { roles: 'button', limit: 5 });
   if (!(a.totalNodes > 0 && b.totalNodes > 0)) throw new Error('第二次调用失败');
   return `两次都拿到 ${a.totalNodes} / ${b.totalNodes} 个节点`;
+});
+
+// 18. 跨域 iframe 子会话
+await step('frames 能列出跨域 iframe 子会话', async () => {
+  await call('navigate', { url: '/', settleMs: 2500 });
+  await sleep(1200);
+  const f = await call('frames');
+  const sessions = f.sessions || [];
+  const inner = sessions.find(s => (s.url || '').includes('inner.html'));
+  if (!inner) throw new Error('没有 iframe 子会话：' + JSON.stringify(sessions.map(s => s.url)));
+  return `${sessions.length} 个子会话，其中 ${inner.url}`;
+});
+
+await step('run_js 能在跨域 iframe 里执行', async () => {
+  const r = await call('run_js', { expression: 'document.title', frame: 'inner.html' });
+  if (r.value !== 'inner-frame') throw new Error('iframe 里拿到的是 ' + JSON.stringify(r));
+  return 'iframe 内 document.title = inner-frame';
+});
+
+await step('iframe 里的 console 也被采到', async () => {
+  const logs = await call('console_logs', { contains: 'inner-console-marker' });
+  if (!logs.logs.length) throw new Error('没有抓到 iframe 的 console');
+  // frame 归属是 best-effort：实测跨域 iframe 的 console 事件走主会话投递，
+  // 拿不到 sessionId，所以这里只要求「抓得到」，不要求「标得出」
+  return `${logs.logs.length} 条（frame 归属 ${logs.logs.some(l => l.frame) ? '有' : '无，按 CDP 投递行为无法判定'}）`;
+});
+
+// 19. WebSocket 帧
+await step('ws_frames 能抓到收发帧', async () => {
+  const r = await call('ws_frames', { limit: 20 });
+  if (!(r.total >= 2)) throw new Error('帧太少：' + r.total);
+  const sent = (r.frames || []).find(f => f.dir === 'sent');
+  const recv = (r.frames || []).find(f => f.dir === 'recv');
+  if (!sent || !recv) throw new Error('缺少 sent 或 recv：' + JSON.stringify(r.frames));
+  if (!String(sent.payload).includes('hello-from-page')) throw new Error('sent 载荷不对');
+  if (!String(recv.payload).includes('echo:')) throw new Error('recv 载荷不对');
+  return `${r.total} 帧，sent=${JSON.stringify(sent.payload)} recv=${JSON.stringify(recv.payload)}`;
+});
+
+await step('ws_frames 能清空', async () => {
+  await call('ws_frames', { clear: true });
+  const r = await call('ws_frames');
+  if (r.total !== 0) throw new Error('清空后还有 ' + r.total + ' 帧');
+  return '已清空';
 });
 
 await sleep(200);

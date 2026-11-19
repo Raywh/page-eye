@@ -27,6 +27,9 @@
     <a id="to-json" href="/api/items">去 JSON 页</a>
     <a id="to-slow" href="/api/slow">慢接口</a>
   </div>
+  <div class="row">
+    <iframe id="cross" style="width:220px;height:70px;border:1px solid #30363d"></iframe>
+  </div>
 </main>
 <script>
 (async () => {
@@ -67,6 +70,19 @@
 
   setTimeout(() => { throw new Error('未捕获的异常'); }, 60);
   setTimeout(() => console.log('tick'), 150);
+
+  // 跨域 iframe：换 host 制造不同 origin，用来测子会话
+  const ifr = document.getElementById('cross');
+  ifr.src = 'http://localhost:' + location.port + '/inner.html';
+
+  // WebSocket：用来测帧采集
+  try {
+    const ws = new WebSocket('ws://' + location.host + '/ws');
+    ws.onopen = () => ws.send('hello-from-page');
+    ws.onmessage = e => console.log('ws-echo:' + e.data);
+  } catch (e) {
+    console.log('ws 初始化失败', e.message);
+  }
 })();
 </script>
 </body>

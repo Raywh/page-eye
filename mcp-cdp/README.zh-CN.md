@@ -324,8 +324,8 @@ Chrome 的判据是「这条规则匹配到了至少一个元素」——所以�
 
 ## 边界
 
-- 只覆盖主 frame —— 跨域 iframe 和 worker 需要 `Target.setAutoAttach`（`frames` 能列出来，但还读不到内容）
-- 不抓 WebSocket 帧（`Network.webSocketFrameReceived` 没接）
+- 跨域 iframe 与 worker：内容可以用 `run_js({ frame })` 读到，但它们的 console 走主会话投递，日志归属无法可靠标出
+- WebSocket 载荷只保留预览；二进制帧只按 opcode 标记，不解码
 - 请求与日志缓冲上限 500 / 800 条，超了丢最旧的
 - 二进制响应体只做标记，不存内容
 - `recorder reload` 会阻塞其它工具调用直到页面稳定
@@ -343,11 +343,11 @@ node run-tests.mjs service      # 只跑某个套件
 | 套件 | 条数 | 覆盖 |
 | --- | --- | --- |
 | `transport`（`test-client.mjs`） | 44 | 握手、200/404/500、POST 体、大 body 落盘、console 各级别、多标签切换、`element_style` |
-| `capabilities`（`capabilities-test.mjs`） | 42 | 十项扩展工具的正常路径 + 副作用 |
+| `capabilities`（`capabilities-test.mjs`） | 48 | 十项扩展工具的正常路径 + 副作用 |
 | `service`（`suite-service.mjs`） | 46 | 协议错误、每个工具的错误路径、生命周期 |
 | `concurrency`（`concurrency-test.mjs`） | 各 4 | 只建一条 CDP 连接，事件不重复 |
 
-**全部套件合计 140 / 140。**
+**全部套件合计 146 / 146。**
 
 写 `suite-service.mjs` 时立刻抓出两个被旧套件掩盖的真 bug：
 

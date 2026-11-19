@@ -59,7 +59,7 @@ mcp-cdp/              MCP server: page content, behaviour and network over CDP
 trae-style-snapshot/  Browser script: rendered styles as JSON your AI can read
 ```
 
-## 22 tools, mapped to the DevTools panels you already know
+## 23 tools, mapped to the DevTools panels you already know
 
 The surface mirrors what you would do by hand in DevTools.
 
@@ -104,6 +104,7 @@ The surface mirrors what you would do by hand in DevTools.
 | `network_get` | One request in full: headers, POST body, response body (bodies over 8000 chars spill to disk) |
 | `net_conditions` | Disable cache, emulate latency and bandwidth, go offline — for measuring first load honestly |
 | `net_mock` | Intercept and fulfil requests: mock an endpoint, rewrite a response, simulate an error status |
+| `ws_frames` | Read WebSocket frames (sent and received): URL, opcode, size, payload preview |
 
 ### Performance — optimise speed
 
@@ -126,7 +127,7 @@ The surface mirrors what you would do by hand in DevTools.
 | | **page-eye** | **chrome-devtools-mcp** | **chrome-inspector-mcp** |
 | --- | --- | --- | --- |
 | Maintainer | this repo | Google / ChromeDevTools | community (devtoolcss) |
-| Tools | 22 | 63 (several categories behind flags) | 6 |
+| Tools | 23 | 63 (several categories behind flags) | 6 |
 | Install | clone, `node server.mjs` | `npx -y chrome-devtools-mcp@latest` | npx + a Chrome extension |
 | Dependencies | none | Puppeteer, npm, Node LTS | Chrome extension |
 | Telemetry | none | usage stats on by default; traces may be sent to CrUX | none |
@@ -184,11 +185,11 @@ node mcp-cdp/run-tests.mjs service      # a single suite
 | Suite | Checks | Covers |
 | --- | --- | --- |
 | `transport` | 44 | MCP handshake, real 200/404/500, POST body, body spill to disk, console levels, uncaught exceptions, tab switching, `element_style` |
-| `capabilities` | 42 | All ten extended tools, happy path with side-effect assertions |
+| `capabilities` | 48 | All ten extended tools, happy path with side-effect assertions |
 | `service` | 46 | Protocol layer (unknown method, malformed JSON, missing arguments), every tool's error path, concurrency, process lifecycle |
 | `concurrency-5` / `-12` | 4 each | Parallel calls open exactly one CDP connection and record each event once |
 
-**140 / 140, three consecutive full runs.**
+**146 / 146, three consecutive full runs.**
 
 `trae-style-snapshot` keeps its own suites: **51** assertions, **12** edge inputs with no exceptions, plus a 4809-node stress run.
 
