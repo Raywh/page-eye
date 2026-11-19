@@ -334,7 +334,7 @@ Run it yourself: `node perf-test.mjs` (needs `serve.mjs` + Chrome on `CDP_ENDPOI
 
 ## Limits
 
-- Cross-origin iframes and workers: content is readable through `run_js({ frame })`, but their console lines are delivered on the main session, so a log entry cannot be attributed to a frame reliably
+- Cross-origin iframes and workers: content is readable through `run_js({ frame })`, but their console and network events are delivered on the main session, so neither can be attributed to a frame reliably, and their traffic shares the same 500-request buffer
 - WebSocket payloads are truncated for display; binary frames are flagged by opcode but not decoded
 - Request and log buffers cap at 500 / 800 entries, oldest dropped
 - Binary response bodies are marked, not stored

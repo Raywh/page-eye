@@ -351,11 +351,12 @@ await step('run_js 能在跨域 iframe 里执行', async () => {
 });
 
 await step('iframe 里的 console 也被采到', async () => {
+  await call('recorder', { clear: true });
+  await call('run_js', { frame: 'inner.html', expression: "console.log('inner-console-marker'); 1" });
+  await sleep(300);
   const logs = await call('console_logs', { contains: 'inner-console-marker' });
   if (!logs.logs.length) throw new Error('没有抓到 iframe 的 console');
-  // frame 归属是 best-effort：实测跨域 iframe 的 console 事件走主会话投递，
-  // 拿不到 sessionId，所以这里只要求「抓得到」，不要求「标得出」
-  return `${logs.logs.length} 条（frame 归属 ${logs.logs.some(l => l.frame) ? '有' : '无，按 CDP 投递行为无法判定'}）`;
+  return logs.logs.length + ' 条（已在清空缓冲后重新触发）';
 });
 
 // 19. WebSocket 帧
@@ -370,11 +371,26 @@ await step('ws_frames 能抓到收发帧', async () => {
   return `${r.total} 帧，sent=${JSON.stringify(sent.payload)} recv=${JSON.stringify(recv.payload)}`;
 });
 
-await step('ws_frames 能清空', async () => {
-  await call('ws_frames', { clear: true });
-  const r = await call('ws_frames');
-  if (r.total !== 0) throw new Error('清空后还有 ' + r.total + ' 帧');
-  return '已清空';
+await step('ws_frames 清空后仍能记录新帧', async () => {
+  const c = await call('ws_frames', { clear: true });
+  const empty = await call('ws_frames');
+  if (empty.total !== 0) throw new Error('清空后还有 ' + empty.total + ' 帧');
+
+  // 重新发一条：从页面侧建一个新连接
+  await call('run_js', {
+    expression: "new Promise(res => {" +
+      "const w = new WebSocket('ws://' + location.host + '/ws');" +
+      "w.onopen = () => w.send('after-clear');" +
+      "w.onmessage = () => { w.close(); res(1); };" +
+      "setTimeout(() => res(0), 3000);" +
+      "})"
+  });
+  await sleep(400);
+  const after = await call('ws_frames');
+  if (!after.total) throw new Error('清空后新帧没进来');
+  const hit = (after.frames || []).some(f => String(f.payload).includes('after-clear'));
+  if (!hit) throw new Error('新帧内容不对: ' + JSON.stringify((after.frames || []).map(f => f.payload)));
+  return '清空前 ' + c.droppedBefore + ' 帧，之后新进 ' + after.total + ' 帧';
 });
 
 await sleep(200);

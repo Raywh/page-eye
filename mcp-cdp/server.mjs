@@ -40,7 +40,8 @@ const state = {
   skipped: 0,
   requestSeq: 0,         // 单调递增，缓冲淘汰后仍能算差
   logSeq: 0,
-  wsSeq: 0
+  wsSeq: 0,
+  wsDropped: 0
 };
 
 const MAX_WS = 300;
@@ -48,17 +49,26 @@ const wsSockets = new Map();   // requestId -> url
 
 function pushWsFrame(dir, p, sid) {
   const r = p.response || {};
+  const raw = String(r.payloadData || '');
+  const binary = r.opcode !== 1;
+  // 二进制帧的 payloadData 是 base64，长度要换算回真实字节
+  const size = binary ? Math.floor((raw.length * 3) / 4) : raw.length;
   state.ws.push({
     ts: Date.now(),
     dir,
     url: truncate(wsSockets.get(p.requestId) || '', 180),
     opcode: r.opcode,
-    size: (r.payloadData || '').length,
-    payload: truncate(String(r.payloadData || ''), 600),
+    binary,
+    size,
+    payload: binary ? truncate(raw, 400) : truncate(raw, 600),
+    payloadTruncated: raw.length > (binary ? 400 : 600),
     frame: sid ? ((children.get(sid) || {}).url || sid) : undefined
   });
   state.wsSeq++;
-  while (state.ws.length > MAX_WS) state.ws.shift();
+  while (state.ws.length > MAX_WS) {
+    state.ws.shift();
+    state.wsDropped++;
+  }
 }
 
 function pushRequest(rec) {
@@ -100,6 +110,7 @@ function reset() {
   state.logSeq = 0;
   state.ws.length = 0;
   state.wsSeq = 0;
+  state.wsDropped = 0;
   wsSockets.clear();
 }
 
@@ -227,6 +238,8 @@ async function connectNow() {
   if (switching) { reset(); resetSession(); }
 
   children.clear();
+  contexts.clear();
+  pageOrigin = null;
   const c = await CDP.connectTo(target);
   try {
     await c.send('Network.enable', { maxTotalBufferSize: 20 * 1024 * 1024 });
@@ -338,7 +351,7 @@ function formatArg(a) {
 }
 
 function install(c) {
-  c.on('Network.requestWillBeSent', p => {
+  c.on('Network.requestWillBeSent', (p, sid) => {
     const existing = state.requests.get(p.requestId);
     if (existing) {   // 重定向：同一 requestId 再来一次，就地更新，别重复入队
       existing.url = p.request.url;
@@ -363,12 +376,14 @@ function install(c) {
       mimeType: undefined,
       size: undefined,
       failed: false,
-      resourceType: p.type
+      resourceType: p.type,
+      sessionId: sid || undefined,
+      frame: sid ? ((children.get(sid) || {}).url || sid) : undefined
     });
 
     // postData 在协议里是可选的，有些请求要单独取
     if (rec.postData === undefined && (p.request.hasPostData || /^(POST|PUT|PATCH)$/.test(p.request.method))) {
-      rec.postDataPromise = c.send('Network.getRequestPostData', { requestId: p.requestId })
+      rec.postDataPromise = c.send('Network.getRequestPostData', { requestId: p.requestId }, sid)
         .then(r => { if (r && r.postData) rec.postData = truncate(r.postData, 2000); })
         .catch(() => { /* 请求已释放，就只能没有 */ });
     }
@@ -393,7 +408,7 @@ function install(c) {
     const textual = /json|text|javascript|xml|html|csv|graphql/i.test(mt);
     if (textual && (p.encodedDataLength || 0) < BODY_EAGER_LIMIT) {
       // body 有时效：请求结束后要尽快取，页面导航后就取不到了
-      rec.bodyPromise = c.send('Network.getResponseBody', { requestId: p.requestId })
+      rec.bodyPromise = c.send('Network.getResponseBody', { requestId: p.requestId }, rec.sessionId)
         .then(r => {
           if (r.base64Encoded) { rec.bodyOmitted = 'binary'; return; }
           storeBody(rec, r.body);
@@ -404,6 +419,10 @@ function install(c) {
 
   c.on('Network.webSocketCreated', p => {
     wsSockets.set(p.requestId, p.url || '');
+  });
+
+  c.on('Network.webSocketClosed', p => {
+    wsSockets.delete(p.requestId);
   });
 
   c.on('Network.webSocketFrameSent', (p, sid) => pushWsFrame('sent', p, sid));
@@ -451,43 +470,6 @@ function install(c) {
       text: truncate(e.text || '', 2000),
       url: e.url
     });
-  });
-
-  c.on('Runtime.executionContextCreated', (p, sid) => {
-    const ctx = p.context || {};
-    if (!ctx.id) return;
-    contexts.set(ctx.id, {
-      origin: ctx.origin || '',
-      frameId: (ctx.auxData && ctx.auxData.frameId) || '',
-      sid: sid || null
-    });
-  });
-
-  c.on('Runtime.executionContextDestroyed', p => {
-    contexts.delete(p.executionContextId);
-  });
-
-  c.on('Target.attachedToTarget', async p => {
-    const sid = p.sessionId;
-    const info = p.targetInfo || {};
-    children.set(sid, { type: info.type, url: info.url || '', title: info.title || '', targetId: info.targetId });
-    log('子会话', info.type, (info.url || '').slice(0, 70));
-    try {
-      await c.send('Runtime.enable', {}, sid);
-      await c.send('Log.enable', {}, sid);
-      await c.send('Page.enable', {}, sid);
-      await c.send('Network.enable', { maxTotalBufferSize: 5 * 1024 * 1024 }, sid);
-    } catch (e) { log('子会话 enable 失败:', e.message); }
-  });
-
-  c.on('Target.detachedFromTarget', p => {
-    children.delete(p.sessionId);
-  });
-
-  c.on('Page.frameNavigated', p => {
-    if (p.frame && !p.frame.parentId) {
-      pushLog({ ts: Date.now(), level: 'info', source: 'navigation', text: '→ ' + p.frame.url });
-    }
   });
 }
 
@@ -822,7 +804,8 @@ async function consoleLogs(args = {}) {
       level: l.level,
       source: l.source,
       text: truncate(l.text, args.maxText || 500),
-      url: l.url
+      url: l.url,
+      frame: l.frame
     }))
   };
 }
@@ -861,8 +844,10 @@ async function resolveSession(c, frame) {
 }
 
 // 一条日志属于哪个 frame：跨域上下文才标，主文档的日志保持干净
+const ctxKey = (sid, id) => (sid || 'main') + ':' + id;
+
 function frameOf(contextId, sid) {
-  const ctx = contextId ? contexts.get(contextId) : null;
+  const ctx = contextId ? contexts.get(ctxKey(sid, contextId)) : null;
   if (ctx && ctx.origin && pageOrigin && ctx.origin !== pageOrigin) return ctx.origin;
   if (sid) {
     const info = children.get(sid);
@@ -874,7 +859,10 @@ function frameOf(contextId, sid) {
 async function runJs(args = {}) {
   const c = await ensure();
   let sid;
-  if (args.frame) {
+  if (args.frame !== undefined && args.frame !== null) {
+    if (String(args.frame).trim() === '') {
+      return { error: 'frame 不能是空字符串；不传 frame 才是在主文档执行' };
+    }
     sid = await resolveSession(c, args.frame);
     if (!sid) {
       return {
@@ -1011,15 +999,16 @@ function installExtra(c) {
   c.on('Runtime.executionContextCreated', (p, sid) => {
     const ctx = p.context || {};
     if (!ctx.id) return;
-    contexts.set(ctx.id, {
+    // 主会话与子会话各有一套 contextId，必须带会话前缀，否则互相覆盖
+    contexts.set(ctxKey(sid, ctx.id), {
       origin: ctx.origin || '',
       frameId: (ctx.auxData && ctx.auxData.frameId) || '',
       sid: sid || null
     });
   });
 
-  c.on('Runtime.executionContextDestroyed', p => {
-    contexts.delete(p.executionContextId);
+  c.on('Runtime.executionContextDestroyed', (p, sid) => {
+    contexts.delete(ctxKey(sid, p.executionContextId));
   });
 
   c.on('Target.attachedToTarget', async p => {
@@ -1027,16 +1016,23 @@ function installExtra(c) {
     const info = p.targetInfo || {};
     children.set(sid, { type: info.type, url: info.url || '', title: info.title || '', targetId: info.targetId });
     log('子会话', info.type, (info.url || '').slice(0, 70));
-    try {
-      await c.send('Runtime.enable', {}, sid);
-      await c.send('Log.enable', {}, sid);
-      await c.send('Page.enable', {}, sid);
-      await c.send('Network.enable', { maxTotalBufferSize: 5 * 1024 * 1024 }, sid);
-    } catch (e) { log('子会话 enable 失败:', e.message); }
+
+    // 每个域单独 try：worker 没有 Page 域，不能让它挡住 Network
+    const enable = async (method, params) => {
+      try { await c.send(method, params || {}, sid); }
+      catch (e) { log('子会话 ' + method + ' 失败:', e.message); }
+    };
+    await enable('Runtime.enable');
+    await enable('Log.enable');
+    await enable('Page.enable');
+    await enable('Network.enable', { maxTotalBufferSize: 5 * 1024 * 1024 });
   });
 
   c.on('Target.detachedFromTarget', p => {
     children.delete(p.sessionId);
+    for (const key of Array.from(contexts.keys())) {
+      if (key.startsWith(p.sessionId + ':')) contexts.delete(key);
+    }
   });
 
   c.on('Page.frameNavigated', (p, sid) => {
@@ -1046,8 +1042,11 @@ function installExtra(c) {
       if (p.frame.url) info.url = p.frame.url;
       if (p.frame.url && !info.title) info.title = p.frame.url.split('/').pop() || '';
     }
-    if (navWaiter && p.frame && !p.frame.parentId) {
-      const w = navWaiter; navWaiter = null; w(p.frame);
+    // 只有主会话的顶层 frame 才算「主导航」：子会话的 root frame 也可能没有 parentId，
+    // 让 iframe 抢先 resolve 会把 committedUrl 记成 iframe 的地址
+    if (!sid && p.frame && !p.frame.parentId) {
+      pushLog({ ts: Date.now(), level: 'info', source: 'navigation', text: '→ ' + p.frame.url });
+      if (navWaiter) { const w = navWaiter; navWaiter = null; w(p.frame); }
     }
   });
 }
@@ -1387,7 +1386,10 @@ async function navigate(args = {}) {
   if (args.settleMs !== 0) await sleep(args.settleMs || 400);
 
   if (last.href && /^https?:\/\//.test(last.href)) {
-    try { lastGoodOrigin = new URL(last.href).origin; } catch (e) {}
+    try {
+      lastGoodOrigin = new URL(last.href).origin;
+      pageOrigin = lastGoodOrigin;
+    } catch (e) {}
   }
 
   return {
@@ -1580,24 +1582,29 @@ async function interact(args = {}) {
 
 // ---- WebSocket 帧
 async function wsFrames(args = {}) {
-  const c = await ensure();
-  if (args.clear) {
+  if (args.clear) {   // 清本地缓冲不需要连接，浏览器没开也要能清
+    const had = state.ws.length;
     state.ws.length = 0;
     state.wsSeq = 0;
-    return { ok: true, cleared: true };
+    state.wsDropped = 0;
+    return { ok: true, cleared: true, droppedBefore: had };
   }
+  const c = await ensure();
   let items = state.ws;
   if (args.url) items = items.filter(x => (x.url || '').includes(args.url));
   if (args.direction) items = items.filter(x => x.dir === args.direction);
   const limit = Math.min(args.limit || 40, 300);
   return {
     total: state.ws.length,
+    dropped: state.wsDropped,
     returned: Math.min(items.length, limit),
     frames: items.slice(-limit).map(f => ({
       dir: f.dir,
       url: f.url,
       opcode: f.opcode,
+      binary: f.binary,
       size: f.size,
+      payloadTruncated: f.payloadTruncated,
       payload: truncate(f.payload, args.maxPayload || 400),
       frame: f.frame
     })),
