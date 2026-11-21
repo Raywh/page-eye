@@ -10,9 +10,15 @@ Two complementary tools in this repo, both built around one idea: **stop transcr
 
 > That is not a hand-written mock. Every line on the right is a real return value from the `element_style` tool. The last step changes the card's `--card-bg` and asks again — the new value is whatever the browser paints at that moment.
 
-## Quick start (3 steps)
+## Quick start (3 steps, no clone)
 
-**1. Start Chrome with a debugging port**
+**1. Get a debuggable Chrome running**
+
+```powershell
+npx -y github:Raywh/page-eye --launch
+```
+
+That starts Chrome with a throwaway profile on port 9222. Already have Chrome open with your logged-in profile? Start it yourself instead:
 
 ```powershell
 & "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe" `
@@ -24,31 +30,34 @@ Two complementary tools in this repo, both built around one idea: **stop transcr
 >
 > On macOS / Linux use `google-chrome` (or `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`) and a `--user-data-dir` such as `/tmp/cdp-profile`.
 
-**2. Create `.trae/mcp.json` in your project**
+**2. Paste the config into your MCP client**
+
+```powershell
+npx -y github:Raywh/page-eye --print-config
+```
 
 ```json
 {
   "mcpServers": {
     "page-eye": {
-      "command": "node",
-      "args": ["<path-to-clone>/mcp-cdp/server.mjs"],
+      "command": "npx",
+      "args": ["-y", "github:Raywh/page-eye"],
       "env": { "CDP_ENDPOINT": "http://127.0.0.1:9222" }
     }
   }
 }
 ```
 
-> - The path must be **absolute**.
-> - In TRAE, enable the “project-level MCP” switch under `Settings → MCP` first.
-> - If the agent reports `spawn node ENOENT`, set `command` to the absolute node path (`where node` / `which node`).
+Save it as `.trae/mcp.json` (TRAE), `.cursor/mcp.json` (Cursor), or `claude mcp add`. No clone, no absolute path.
+
+> In TRAE, enable the “project-level MCP” switch under `Settings → MCP` first.
+> If the agent reports `spawn npx ENOENT`, point `command` at the absolute `npx` path (`where npx`).
 
 **3. Ask the agent something**
 
 > Use page-eye's `element_style` to check the background and shadow of `.card`.
 
----
-
-Cursor and Claude Code use the same JSON, only the file location differs (`.cursor/mcp.json`, `claude mcp add`).
+Stuck? `npx -y github:Raywh/page-eye --doctor` prints the node version, whether Chrome is debuggable, and which tabs are visible.
 
 **Only need styles, no MCP?** Use [trae-style-snapshot](trae-style-snapshot/README.md) instead — paste one script into the console, zero setup.
 

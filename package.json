@@ -1,0 +1,44 @@
+{
+  "name": "page-eye",
+  "version": "0.1.0",
+  "description": "MCP server that lets an AI read a live Chrome page over CDP: computed styles, network, console, accessibility, WebSocket frames — zero dependencies.",
+  "type": "module",
+  "bin": {
+    "page-eye": "bin/page-eye.mjs"
+  },
+  "files": [
+    "bin",
+    "mcp-cdp/server.mjs",
+    "trae-style-snapshot/style-snapshot.js",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "doctor": "node bin/page-eye.mjs --doctor",
+    "config": "node bin/page-eye.mjs --print-config",
+    "test": "node mcp-cdp/run-tests.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "mcp",
+    "chrome",
+    "cdp",
+    "devtools",
+    "ai",
+    "trae",
+    "cursor",
+    "computed-styles"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Raywh/page-eye.git"
+  },
+  "homepage": "https://github.com/Raywh/page-eye#readme",
+  "bugs": {
+    "url": "https://github.com/Raywh/page-eye/issues"
+  }
+}
